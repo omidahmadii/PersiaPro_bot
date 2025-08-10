@@ -1,0 +1,49 @@
+2025-07-13 15:57:56 | INFO     | aiogram.event | Update id=113522239 is handled. Duration 421 ms by bot id=5994755065
+2025-07-13 15:57:57 | INFO     | vpn_bot | 5630036380 | 👤 حساب کاربری 
+2025-07-13 15:57:57 | INFO     | vpn_bot | 5630036380 | 👤 نام: Omid
+🔰 یوزرنیم: @omidahmadi1992
+‏ 🆔 آیدی تلگرام: <code>5630036380</code>
+🎚 نقش: کاربر
+💰 موجودی: 0 تومان
+📅 عضویت: 2025-06-23 23:33:09
+2025-07-13 15:57:57 | INFO     | aiogram.event | Update id=113522240 is handled. Duration 226 ms by bot id=5994755065
+2025-07-13 15:58:28 | INFO     | aiogram.dispatcher | Polling stopped
+2025-07-13 15:58:28 | INFO     | aiogram.dispatcher | Polling stopped for bot @omidmilad_bot id=5994755065 - 'omidmiladbot'
+2025-07-13 15:58:32 | INFO     | aiogram.dispatcher | Start polling
+2025-07-13 15:58:33 | INFO     | aiogram.dispatcher | Run polling for bot @omidmilad_bot id=5994755065 - 'omidmiladbot'
+2025-07-13 15:58:33 | INFO     | vpn_bot | 5630036380 | 👤 حساب کاربری 
+2025-07-13 15:58:33 | INFO     | vpn_bot | 5630036380 | 👤 نام: Omid
+🔰 یوزرنیم: @omidahmadi1992
+‏ 🆔 آیدی تلگرام: <code>5630036380</code>
+🎚 نقش: کاربر
+💰 موجودی: 0 تومان
+📅 عضویت: 2025-06-23 23:33:09
+2025-07-13 15:58:33 | INFO     | aiogram.event | Update id=113522241 is handled. Duration 350 ms by bot id=5994755065
+2025-07-13 16:07:25 | INFO     | aiogram.dispatcher | Polling stopped
+2025-07-13 16:07:25 | INFO     | aiogram.dispatcher | Polling stopped for bot @omidmilad_bot id=5994755065 - 'omidmiladbot'
+2025-07-13 16:36:34 | INFO     | aiogram.dispatcher | Start polling
+2025-07-13 16:36:35 | INFO     | aiogram.dispatcher | Run polling for bot @omidmilad_bot id=5994755065 - 'omidmiladbot'
+2025-07-13 16:38:05 | INFO     | aiogram.dispatcher | Polling stopped
+2025-07-13 16:38:05 | INFO     | aiogram.dispatcher | Polling stopped for bot @omidmilad_bot id=5994755065 - 'omidmiladbot'
+2025-07-13 16:38:09 | INFO     | aiogram.dispatcher | Start polling
+2025-07-13 16:38:32 | INFO     | aiogram.dispatcher | Polling stopped
+2025-07-13 16:38:55 | INFO     | aiogram.dispatcher | Start polling
+2025-07-13 16:38:56 | INFO     | aiogram.dispatcher | Run polling for bot @omidmilad_bot id=5994755065 - 'omidmiladbot'
+2025-07-13 16:39:33 | INFO     | aiogram.dispatcher | Polling stopped
+2025-07-13 16:39:33 | INFO     | aiogram.dispatcher | Polling stopped for bot @omidmilad_bot id=5994755065 - 'omidmiladbot'
+2025-07-13 16:39:41 | INFO     | aiogram.dispatcher | Start polling
+2025-07-13 16:39:42 | INFO     | aiogram.dispatcher | Run polling for bot @omidmilad_bot id=5994755065 - 'omidmiladbot'
+2025-07-13 16:40:07 | INFO     | aiogram.dispatcher | Polling stopped
+2025-07-13 16:40:07 | INFO     | aiogram.dispatcher | Polling stopped for bot @omidmilad_bot id=5994755065 - 'omidmiladbot'
+2025-07-13 16:40:29 | INFO     | aiogram.dispatcher | Start polling
+2025-07-13 16:40:29 | INFO     | aiogram.dispatcher | Run polling for bot @omidmilad_bot id=5994755065 - 'omidmiladbot'
+2025-07-13 16:42:41 | INFO     | aiogram.dispatcher | Polling stopped
+2025-07-13 16:42:41 | ERROR    | aiogram.dispatcher | Failed to fetch updates - TelegramNetworkError: HTTP Client says - ClientOSError: [Errno 1] [SSL: APPLICATION_DATA_AFTER_CLOSE_NOTIFY] application data after close notify (_ssl.c:2775)
+2025-07-13 16:42:41 | WARNING  | aiogram.dispatcher | Sleep for 1.000000 seconds and try again... (tryings = 0, bot id = 5994755065)
+2025-07-13 16:42:41 | INFO     | aiogram.dispatcher | Polling stopped for bot @omidmilad_bot id=5994755065 - 'omidmiladbot'
+2025-07-13 16:42:49 | INFO     | aiogram.dispatcher | Start polling
+2025-07-13 16:42:50 | INFO     | aiogram.dispatcher | Run polling for bot @omidmilad_bot id=5994755065 - 'omidmiladbot'
+2025-07-13 16:43:20 | INFO     | aiogram.dispatcher | Polling stopped
+2025-07-13 16:43:20 | ERROR    | aiogram.dispatcher | Failed to fetch updates - TelegramNetworkError: HTTP Client says - ClientOSError: [Errno 1] [SSL: APPLICATION_DATA_AFTER_CLOSE_NOTIFY] application data after close notify (_ssl.c:2775)
+2025-07-13 16:43:20 | WARNING  | aiogram.dispatcher | Sleep for 1.000000 seconds and try again... (tryings = 0, bot id = 5994755065)
+2025-07-13 16:43:20 | INFO     | aiogram.dispatcher | Polling stopped for bot @omidmilad_bot id=5994755065 - 'omidmiladbot'
