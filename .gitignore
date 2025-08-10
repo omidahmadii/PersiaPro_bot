@@ -1,0 +1,20 @@
+# secrets & local stuff
+.env
+*.log
+bot.log
+__pycache__/
+*.sqlite
+*.db
+/database/
+transactions/
+
+# python
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# IDE/editor
+.idea/
+.vscode/
