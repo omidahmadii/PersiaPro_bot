@@ -11,8 +11,19 @@ from services.db import get_user_telegram_id_by_txn_id, get_user_balance
 
 router = Router()
 
-MIN_TOPUP = 1000        # 1,000 تومان
-MAX_TOPUP = 50000000    # 50,000,000 تومان (دلخواه)
+MIN_TOPUP = 1000  # 1,000 تومان
+MAX_TOPUP = 50000000  # 50,000,000 تومان (دلخواه)
+
+
+def parse_amount(text: str) -> int | None:
+    # فقط رقم‌ها را نگه می‌داریم (تا اگر کسی با کاما/فاصله نوشت هم اوکی باشد)
+    digits = ''.join(ch for ch in (text or '') if ch.isdigit())
+    if not digits:
+        return None
+    value = int(digits)
+    if value < MIN_TOPUP or value > MAX_TOPUP:
+        return None
+    return value
 
 
 class VerifyTxn(StatesGroup):
@@ -120,28 +131,60 @@ async def receive_reject_reason(msg: Message, state: FSMContext, bot: Bot):
 
 @router.callback_query(VerifyTxn.waiting_for_amount, F.data.startswith("amount_"))
 async def amount_chosen(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    amount = int(callback.data.split("_")[1])
+    raw = callback.data.split("_")[1]
+    amount = parse_amount(raw)
+    if amount is None:
+        await callback.message.answer(f"❌ مبلغ نامعتبر. بازه مجاز: {MIN_TOPUP:,} تا {MAX_TOPUP:,} تومان.")
+        await callback.answer()
+        return
+
     data = await state.get_data()
     txn_id = data.get("txn_id")
 
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
+
+    # گرفتن user_id (که گفتی همون Telegram ID است)
     cur.execute("SELECT user_id FROM transactions WHERE id = ?", (txn_id,))
     row = cur.fetchone()
     if not row:
-        await callback.message.answer("تراکنش پیدا نشد.")
+        await callback.message.answer("⛔️ تراکنش پیدا نشد.")
         await state.clear()
+        await callback.answer()
         return
     user_id = row[0]
 
-    cur.execute("UPDATE transactions SET amount = ?, status = 'approved' WHERE id = ?", (amount, txn_id))
-    cur.execute("UPDATE users SET balance = balance + ? WHERE id = ?", (amount, user_id))
+    # ✅ قفل خوش‌بینانه: فقط اگر هنوز pending است، تأیید کن
+    cur.execute(
+        "UPDATE transactions SET amount = ?, status = 'approved' WHERE id = ? AND status = 'pending'",
+        (amount, txn_id)
+    )
+    if cur.rowcount == 0:
+        # یعنی یکی دیگه یا خود ادمین، همین رو قبلاً تأیید/رد کرده
+        conn.rollback()
+        conn.close()
+        await callback.message.answer("⛔️ این تراکنش قبلاً بررسی شده.")
+        await state.clear()
+        await callback.answer()
+        return
+
+    # افزایش موجودی (COALESCE برای اطمینان از نال نبودن)
+    cur.execute("UPDATE users SET balance = COALESCE(balance, 0) + ? WHERE id = ?", (amount, user_id))
     conn.commit()
     conn.close()
 
-    await callback.message.answer(f"تراکنش شماره {txn_id} تایید شد و مبلغ {amount:,} تومان به حساب کاربر افزوده شد.")
-    await callback.bot.send_message(user_id,
-                                    f"✅ تراکنش شما تایید شد.\n💰 حساب شما به میزان {amount:,} تومان شارژ گردید.")
+    from services.db import get_user_balance  # اگر بالا ایمپورتش کردی، این خط لازم نیست
+    user_balance = get_user_balance(user_id)
+
+    await callback.message.answer(
+        f"✅ تراکنش #{txn_id} تایید شد و {amount:,} تومان اضافه شد.\n"
+        f"💳 مانده فعلی کاربر: {user_balance:,} تومان"
+    )
+    await bot.send_message(
+        user_id,
+        f"✅ تراکنش شما تایید شد.\n💰 {amount:,} تومان به کیف‌پول شما افزوده شد.\n"
+        f"💳 مانده فعلی: {user_balance:,} تومان"
+    )
 
     await state.clear()
     await callback.answer()
@@ -149,10 +192,9 @@ async def amount_chosen(callback: CallbackQuery, state: FSMContext, bot: Bot):
 
 @router.message(VerifyTxn.waiting_for_amount)
 async def amount_typed(message: Message, state: FSMContext, bot: Bot):
-    try:
-        amount = int(message.text.strip())
-    except ValueError:
-        await message.answer("❌ لطفاً فقط عدد وارد کنید.")
+    amount = parse_amount(message.text)
+    if amount is None:
+        await message.answer(f"❌ لطفاً یک عدد معتبر بین {MIN_TOPUP:,} و {MAX_TOPUP:,} تومان وارد کنید.")
         return
 
     data = await state.get_data()
@@ -160,29 +202,44 @@ async def amount_typed(message: Message, state: FSMContext, bot: Bot):
 
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
+
     cur.execute("SELECT user_id FROM transactions WHERE id = ?", (txn_id,))
     row = cur.fetchone()
     if not row:
-        await message.answer("تراکنش پیدا نشد.")
+        await message.answer("⛔️ تراکنش پیدا نشد.")
         await state.clear()
         return
     user_id = row[0]
 
-    cur.execute("UPDATE transactions SET amount = ?, status = 'approved' WHERE id = ?", (amount, txn_id))
-    cur.execute("UPDATE users SET balance = balance + ? WHERE id = ?", (amount, user_id))
+    # ✅ همون قفل خوش‌بینانه اینجا هم
+    cur.execute(
+        "UPDATE transactions SET amount = ?, status = 'approved' WHERE id = ? AND status = 'pending'",
+        (amount, txn_id)
+    )
+    if cur.rowcount == 0:
+        conn.rollback()
+        conn.close()
+        await message.answer("⛔️ این تراکنش قبلاً بررسی شده.")
+        await state.clear()
+        return
+
+    cur.execute("UPDATE users SET balance = COALESCE(balance, 0) + ? WHERE id = ?", (amount, user_id))
     conn.commit()
     conn.close()
+
+    from services.db import get_user_balance  # اگر بالا ایمپورتش کردی، این خط لازم نیست
     user_balance = get_user_balance(user_id)
+
     await message.answer(
-        f"تراکنش شماره {txn_id} تایید شد و مبلغ {amount:,} تومان به حساب کاربر افزوده شد.\n"
-        f"💳 مانده حساب فعلی: {user_balance:,} تومان"
+        f"✅ تراکنش #{txn_id} تایید شد و {amount:,} تومان اضافه شد.\n"
+        f"💳 مانده فعلی کاربر: {user_balance:,} تومان"
     )
     await bot.send_message(
         user_id,
-        f"✅ تراکنش شما تایید شد.\n"
-        f"💰 حساب شما به میزان {amount:,} تومان شارژ گردید.\n"
-        f"💳 مانده حساب فعلی شما: {user_balance:,} تومان"
+        f"✅ تراکنش شما تایید شد.\n💰 {amount:,} تومان به کیف‌پول شما افزوده شد.\n"
+        f"💳 مانده فعلی: {user_balance:,} تومان"
     )
+
     await state.clear()
 
 
