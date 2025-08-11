@@ -5,6 +5,7 @@ from aiogram import Router, F, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message
+from services.db import get_active_cards
 
 from config import ADMINS
 from keyboards.payment import payment_keyboard
@@ -36,16 +37,37 @@ async def show_payment_info(message: Message, state: FSMContext):
     if not exists:
         add_user(user_id, first_name, username, role)
 
-    await message.answer(
-        "💳 برای شارژ حساب لطفاً مبلغ مورد نظر را به یکی از شماره کارت‌های زیر واریز کنید:\n\n"
-        # f"🏦 بلو بانک:\n<code>\u200F6219861931605918</code>\n\n"
-        f"🏦 بانک پاسارگاد \nبه نام فاطمه ابراهیمیان\n<code>\u200F5022291522015922</code>\n\n"
-        f"🏦 بلو بانک \nبه نام امید احمدی\n<code>\u200F5022291522015922</code>\n\n"
-        "📸 سپس تصویر فیش پرداخت را ارسال نمایید.\n\n"
-        "<b>\u200Fℹ️ برای کپی کردن شماره کارت روی آن بزنید.</b>",
-        parse_mode="HTML",
-        reply_markup=payment_keyboard()
-    )
+    active_cards = get_active_cards()
+
+    if not active_cards:
+        await message.answer(
+            "❌ در حال حاضر هیچ کارت فعالی موجود نیست.",
+            parse_mode="HTML"
+        )
+    else:
+        # متن پایه
+        text = "💳 برای شارژ حساب لطفاً مبلغ مورد نظر را به یکی از شماره کارت‌های زیر واریز کنید:\n\n"
+
+        # اضافه کردن هر کارت به متن
+        for card in active_cards:
+            text += (
+                f"🏦 {card['bank_name']} \n"
+                f"به نام {card['owner_name']}\n"
+                f"<code>\u200F{card['card_number']}</code>\n\n"
+            )
+
+        # ادامه متن ثابت
+        text += (
+            "📸 سپس تصویر فیش پرداخت را ارسال نمایید.\n\n"
+            "<b>\u200Fℹ️ برای کپی کردن شماره کارت روی آن بزنید.</b>"
+        )
+
+        # ارسال پیام
+        await message.answer(
+            text,
+            parse_mode="HTML",
+            reply_markup=payment_keyboard()
+        )
 
     await state.set_state(PaymentStates.waiting_for_receipt)
 

@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict
 
 import jdatetime
@@ -10,106 +10,143 @@ from config import DB_PATH
 def create_tables():
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
-
-        # users table
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY,
-                first_name TEXT,
-                username TEXT,
-                role TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                balance INTEGER DEFAULT 0
-            )
-        """)
+                CREATE TABLE IF NOT EXISTS accounts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL UNIQUE,
+                    password TEXT NOT NULL,
+                    status TEXT DEFAULT 'free',
+                    plan_id INTEGER,
+                    order_id INTEGER,
+                    start_date INTEGER,
+                    expire_date TIMESTAMP,
+                    comment TEXT,
+                    FOREIGN KEY(order_id) REFERENCES orders(id),
+                    FOREIGN KEY(plan_id) REFERENCES plans(id)
+                )
+                """)
 
-        # plans table
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS plans (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                volume_gb INTEGER,
-                duration_months INTEGER,
-                max_users INTEGER,
-                price INTEGER NOT NULL
-            )
-        """)
+                CREATE TABLE IF NOT EXISTS bank_cards (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    card_number TEXT NOT NULL,
+                    owner_name TEXT,
+                    bank_name TEXT,
+                    priority INTEGER NOT NULL DEFAULT 0,
+                    is_active INTEGER NOT NULL DEFAULT 1
+                )
+                """)
 
-        # servers table
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS servers (
-                server_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                location TEXT NOT NULL,
-                ip TEXT NOT NULL,
-                port INTEGER NOT NULL,
-                panel_path TEXT NOT NULL,
-                api_base_url TEXT NOT NULL,
-                v2ray_username TEXT NOT NULL,
-                v2ray_password TEXT NOT NULL,
-                inbound_id INTEGER,
-                subscription_path TEXT
-            )
-        """)
+                CREATE TABLE IF NOT EXISTS feedbacks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    type TEXT,
+                    message TEXT,
+                    created_at TEXT
+                )
+                """)
 
-        # orders table
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS orders (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                plan_id INTEGER,
-                username INTEGER UNIQUE,
-                status TEXT NOT NULL,
-                price INTEGER NOT NULL,
-                created_at TEXT,
-                expires_at TEXT,
-                volume_bytes INTEGER,
-                FOREIGN KEY(user_id) REFERENCES users(id),
-                FOREIGN KEY(plan_id) REFERENCES plans(id)
-            )
-        """)
+                CREATE TABLE IF NOT EXISTS order_usages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    order_id INTEGER,
+                    username TEXT,
+                    plan_id INTEGER,
+                    starts_at TEXT,
+                    expires_at TEXT,
+                    last_update NUMERIC,
+                    sent_mb INTEGER,
+                    received_mb INTEGER,
+                    total_mb INTEGER,
+                    applied_speed TEXT,
+                    FOREIGN KEY(order_id) REFERENCES orders(id)
+                )
+                """)
 
-        # order_payments table
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS order_payments (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                order_id INTEGER,
-                amount INTEGER,
-                status TEXT,
-                created_at TEXT,
-                FOREIGN KEY(user_id) REFERENCES users(id),
-                FOREIGN KEY(order_id) REFERENCES orders(id)
-            )
-        """)
+                CREATE TABLE IF NOT EXISTS orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    plan_id INTEGER,
+                    username INTEGER,
+                    status TEXT NOT NULL,
+                    price INTEGER NOT NULL,
+                    created_at TEXT,
+                    starts_at BLOB,
+                    expires_at TEXT,
+                    last_notif_level INTEGER,
+                    is_renewal_of_order INTEGER,
+                    volume_bytes INTEGER,
+                    FOREIGN KEY(plan_id) REFERENCES plans(id),
+                    FOREIGN KEY(user_id) REFERENCES users(id)
+                )
+                """)
 
-        # transactions table
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS transactions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                amount INTEGER NOT NULL DEFAULT 0,
-                status TEXT NOT NULL DEFAULT 'pending',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                photo_id TEXT NOT NULL,
-                photo_path TEXT NOT NULL
-            )
-        """)
+                CREATE TABLE IF NOT EXISTS plans (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    volume_gb INTEGER,
+                    duration_months INTEGER,
+                    max_users INTEGER,
+                    price INTEGER NOT NULL,
+                    order_priority INTEGER DEFAULT 0,
+                    visible INTEGER DEFAULT 1,
+                    location TEXT,
+                    is_unlimited INTEGER DEFAULT 0,
+                    group_name TEXT,
+                    duration_days INTEGER
+                )
+                """)
 
-        # accounts table
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS accounts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL UNIQUE,
-                password TEXT NOT NULL,
-                status TEXT DEFAULT 'free',
-                plan_id INTEGER,
-                order_id INTEGER,
-                expire_date TIMESTAMP,
-                comment TEXT,
-                FOREIGN KEY(plan_id) REFERENCES plans(id),
-                FOREIGN KEY(order_id) REFERENCES orders(id)
-            )
-        """)
+                CREATE TABLE IF NOT EXISTS servers (
+                    server_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    location TEXT NOT NULL,
+                    ip TEXT NOT NULL,
+                    port INTEGER NOT NULL,
+                    panel_path TEXT NOT NULL,
+                    api_base_url TEXT NOT NULL,
+                    v2ray_username TEXT NOT NULL,
+                    v2ray_password TEXT NOT NULL,
+                    inbound_id INTEGER,
+                    subscription_path TEXT
+                )
+                """)
+
+        cursor.execute("""
+                CREATE TABLE IF NOT EXISTS speed_limits (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    threshold_gb INTEGER,
+                    speed TEXT
+                )
+                """)
+
+        cursor.execute("""
+                CREATE TABLE IF NOT EXISTS transactions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    amount INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    photo_id TEXT NOT NULL,
+                    photo_path TEXT NOT NULL,
+                    photo_hash TEXT
+                )
+                """)
+
+        cursor.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY,
+                    first_name TEXT,
+                    username TEXT,
+                    role TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    balance INTEGER DEFAULT 0,
+                    membership_status TEXT DEFAULT 'not_member'
+                )
+                """)
         conn.commit()
 
 
@@ -149,10 +186,22 @@ def add_plan(name, volume_gb, duration_days, max_users, price):
 
 def get_all_plans():
     with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id, name, volume_gb, duration_months, max_users, price FROM plans order by order_priority DESC")
-        return cursor.fetchall()
+        cursor.execute("""
+            SELECT 
+                id,
+                name,
+                volume_gb,
+                duration_months,
+                duration_days,
+                max_users,
+                price,
+                group_name
+            FROM plans
+            ORDER BY order_priority DESC
+        """)
+        return [dict(row) for row in cursor.fetchall()]
 
 
 # Server management
@@ -603,40 +652,34 @@ def get_orders_usage_for_limitation():
         return cursor.fetchall()
 
 
-"""   
-def get_orders_usage_for_limitation():
-    now = jdatetime.datetime.now()
-
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
-        cursor.execute(""""""
-            SELECT ou.id, ou.order_id, ou.username, ou.total_mb, ou.applied_speed, p.is_unlimited, o.expires_at
-            FROM order_usages ou
-            JOIN orders o ON ou.order_id = o.id
-            JOIN plans p ON o.plan_id = p.id
-        """""")
-        rows = cursor.fetchall()
-
-    # فیلتر سفارش‌هایی که اکسپایر نشدن
-    valid_rows = []
-    for row in rows:
-        usage_id, order_id, username, total_mb, applied_speed, is_unlimited, expires_at_str = row
-
-        try:
-            expires_at = jdatetime.datetime.strptime(expires_at_str, "%Y-%m-%d %H:%M")
-        except Exception as e:
-            print(f"[!] تاریخ نامعتبر برای order_id={order_id}: {expires_at_str}")
-            continue
-
-        if expires_at > now:
-            valid_rows.append((usage_id, order_id, username, total_mb, applied_speed, is_unlimited))
-
-    return valid_rows
-"""
-
-
 def save_applied_speed_to_db(applied_speed: str, order_id: int):
     with sqlite3.connect(DB_PATH) as conn:
         curses = conn.cursor()
         curses.execute("""UPDATE order_usages SET applied_speed = ? where order_id=?""", (applied_speed, order_id))
         conn.commit()
+
+
+def get_active_cards():
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT card_number, owner_name, bank_name
+            FROM bank_cards
+            WHERE is_active = 1
+            ORDER BY priority DESC
+        """)
+
+        rows = cursor.fetchall()
+        if not rows:
+            return []
+
+        return [
+            {
+                "card_number": card_number,
+                "owner_name": owner_name or "",
+                "bank_name": bank_name or ""
+            }
+            for card_number, owner_name, bank_name in rows
+        ]
+
+
