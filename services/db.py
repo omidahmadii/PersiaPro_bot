@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional, List, Dict
 
 import jdatetime
@@ -577,6 +577,18 @@ def get_order_plan_duration(order_id):
         return dict(cursor.fetchone())
 
 
+def get_order_plan_group_name(order_id):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+                SELECT group_name FROM plans
+                JOIN orders on orders.plan_id = plans.id
+                WHERE orders.id = ?
+            """, (order_id,))
+        return dict(cursor.fetchone())
+
+
 def get_orders_for_notifications(expires_at):
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
@@ -681,5 +693,3 @@ def get_active_cards():
             }
             for card_number, owner_name, bank_name in rows
         ]
-
-

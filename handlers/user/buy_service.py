@@ -125,8 +125,9 @@ async def confirm_and_create(message: Message, state: FSMContext):
     plan_name = plan['name']
     plan_duration = plan['duration_months']  # یا اگر روز میخوای plan['duration_days']
     plan_price = plan['price']
+    plan_group_name = plan['group_name']
     user_id = message.from_user.id
-
+    print(plan_group_name)
     # پیدا کردن اکانت آزاد
     free_account = find_free_account()
     if not free_account:
@@ -147,7 +148,8 @@ async def confirm_and_create(message: Message, state: FSMContext):
         return await message.answer("❌ خطایی در ثبت سفارش رخ داد. لطفاً دوباره تلاش کنید.")
 
     # تغییر گروه در IBSng
-    change_group(account_username, f"{plan_duration}-Month")
+    # change_group(account_username, f"{plan_duration}-Month")
+    change_group(username=account_username, group=plan_group_name)
 
     # کم کردن موجودی
     user_balance = get_user_balance(user_id)

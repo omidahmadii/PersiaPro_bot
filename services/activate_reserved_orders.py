@@ -1,21 +1,17 @@
 import datetime
-import asyncio
 
 import jdatetime
 import requests
-from aiogram.enums import ParseMode
 
-from services.bot_instance import bot
-
+from config import BOT_TOKEN  # فرض بر این که توکن در config موجود است
 from services import IBSng
 from services.IBSng import change_group
 from services.db import (
     get_reserved_orders,
     get_order_data,
     update_order_status,
-    get_order_plan_duration,
+    get_order_plan_duration, get_order_plan_group_name,
 )
-from config import BOT_TOKEN  # فرض بر این که توکن در config موجود است
 
 
 # ----------------------------------------------------------------------------
@@ -60,13 +56,14 @@ def _maybe_activate_reserved_order(reserved_order: dict) -> None:
 
     # Sync IBSng group according to plan duration
     duration_months = get_order_plan_duration(order_id=reserved_order["id"]).get("duration_months", 1)
-    group_name = f"{duration_months}-Month"
-
+    # group_name = f"{duration_months}-Month"
+    group_name = get_order_plan_group_name(order_id=reserved_order["id"])
     IBSng.reset_account_client(username=reserved_order["username"])
     change_group(reserved_order["username"], group_name)
 
     # Notify the user via Telegram
     _notify_user_activation(reserved_order, duration_months)
+
 
 def _is_previous_order_expired(order: dict) -> bool:
     """Return True if previous order expired (status or timestamp)."""
@@ -89,7 +86,6 @@ def _notify_user_activation(reserved_order: dict, duration_months: int) -> None:
         "نام کاربری: <code>{username}</code>\n"
         "لطفاً در صورت مشکل با پشتیبانی در تماس باشید."
     ).format(duration=duration_months, username=reserved_order["username"])
-
 
     """ارسال پیام به کاربر در تلگرام"""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"

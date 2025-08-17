@@ -1,6 +1,7 @@
-import requests
+from config import IBS_BASE_URL, IBS_USERNAME, IBS_PASSWORD
 from bs4 import BeautifulSoup
 import re
+import requests
 
 
 def login():
@@ -8,6 +9,9 @@ def login():
     login_url = 'http://ibs.persiapro.com/IBSng/admin/'
     username = 'system'
     password = 'Kent228mud120'
+    # username = IBS_USERNAME
+    # password = IBS_PASSWORD
+    # login_url = IBS_BASE_URL
 
     # Create a session to persist cookies
     session = requests.Session()
@@ -370,6 +374,7 @@ def reset_account(username):
     unlock_user(username)
     reset_radius_attrs(username)
 
+
 def reset_account_client(username):
     reset_times(username)
     change_group(username, 'Starter-Bot')
@@ -420,6 +425,7 @@ def get_usage_last_n_days(username, days):
 
         return receive, send
     return None, None
+
 
 def delete_user(username):
     session = login()
@@ -485,7 +491,6 @@ def change_queue_level(username, queue_level):
         print("Status code:", response.status_code)
 
 
-
 def apply_user_radius_attrs(username, radius_attrs):
     session = login()
     user_id = get_user_id(username)
@@ -501,7 +506,6 @@ def apply_user_radius_attrs(username, radius_attrs):
         'radius_attrs': radius_attrs
     }
     session.post(edit_url, data=payload)
-
 
 
 def get_user_radius_attribute(username):

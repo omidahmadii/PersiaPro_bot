@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+
 import jdatetime
 from aiogram import Router, F, Bot
 from aiogram.fsm.context import FSMContext
@@ -22,11 +23,13 @@ from services.db import (
 
 router = Router()
 
+
 # ---------------- FSM States ---------------- #
 class RenewStates(StatesGroup):
     wait_service = State()
     wait_plan = State()
     confirming = State()
+
 
 # ---------------- Keyboards ---------------- #
 def confirm_keyboard() -> ReplyKeyboardMarkup:
@@ -35,6 +38,7 @@ def confirm_keyboard() -> ReplyKeyboardMarkup:
         resize_keyboard=True,
         one_time_keyboard=True,
     )
+
 
 # ---------------- Step 0: Entry ---------------- #
 @router.message(F.text == "📄 تمدید سرویس")
@@ -58,6 +62,7 @@ async def handle_renew_request(message: Message, state: FSMContext):
 
     task = asyncio.create_task(_timeout_cancel(state, message.chat.id))
     await state.update_data(timeout_task=task)
+
 
 # ---------------- Step 1: Choose Service ---------------- #
 @router.message(RenewStates.wait_service)
@@ -97,6 +102,7 @@ async def choose_service(message: Message, state: FSMContext):
     task = asyncio.create_task(_timeout_cancel(state, message.chat.id))
     await state.update_data(timeout_task=task)
 
+
 # ---------------- Step 2: Choose Plan ---------------- #
 @router.message(RenewStates.wait_plan)
 async def choose_plan(message: Message, state: FSMContext):
@@ -123,6 +129,7 @@ async def choose_plan(message: Message, state: FSMContext):
         f"شما در حال خریداری سرویس {selected_plan['name']} به مبلغ {plan_price} تومان می‌باشید. آیا مطمئن هستید؟",
         reply_markup=confirm_keyboard(),
     )
+
 
 # ---------------- Step 3: Confirm & Process ---------------- #
 @router.message(RenewStates.confirming)
@@ -155,12 +162,14 @@ async def confirm_and_renew(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(result_text, reply_markup=user_main_menu_keyboard())
 
+
 # ---------------- Core Renewal Logic ---------------- #
 async def _process_renewal(user_id: int, service: dict, plan: dict, user_balance: int) -> str:
     plan_id = plan['id']
     plan_name = plan['name']
     plan_duration = plan['duration_months']  # اگر بعداً روزی شد: plan['duration_days']
     plan_price = plan['price']
+    plan_group_name = plan['group_name']
 
     service_id = service["id"]
     service_username = str(service["username"])
@@ -172,7 +181,8 @@ async def _process_renewal(user_id: int, service: dict, plan: dict, user_balance
     update_user_balance(user_id, new_balance)
 
     if is_expired:
-        await _renew_expired_service(user_id, service_id, service_username, plan_id, plan_name, plan_duration, plan_price)
+        await _renew_expired_service(user_id, service_id, service_username, plan_id, plan_name, plan_duration,
+                                     plan_price, plan_group_name)
         return "✅ سرویس با موفقیت تمدید شد.\nبازگشت به منوی اصلی"
 
     await _queue_active_service(user_id, service_id, service_username, plan_id, plan_name, plan_duration, plan_price)
@@ -181,13 +191,16 @@ async def _process_renewal(user_id: int, service: dict, plan: dict, user_balance
         "بازگشت به منوی اصلی"
     )
 
+
 # ---------------- Service Actions ---------------- #
-async def _renew_expired_service(user_id, service_id, username, plan_id, plan_name, plan_duration, plan_price):
+async def _renew_expired_service(user_id, service_id, username, plan_id, plan_name, plan_duration, plan_price,
+                                 plan_group_name):
     update_order_status(order_id=service_id, new_status="renewed")
     insert_renewed_order(user_id, plan_id, username, plan_price, "active", service_id)
 
     IBSng.reset_account_client(username=username)
-    change_group(username, f"{plan_duration}-Month")
+    # change_group(username, f"{plan_duration}-Month")
+    change_group(username=username, group=plan_group_name)
 
     text = (
         "🔔 تمدید انجام شد (فعالسازی فوری)\n"
@@ -195,6 +208,7 @@ async def _renew_expired_service(user_id, service_id, username, plan_id, plan_na
         f"⏳ مدت: {plan_duration} ماه\n💳 مبلغ: {plan_price} تومان\n🟢 وضعیت: فعال شد"
     )
     await send_message_to_admins(text)
+
 
 async def _queue_active_service(user_id, service_id, username, plan_id, plan_name, plan_duration, plan_price):
     update_order_status(order_id=service_id, new_status="waiting_for_renewal")
@@ -207,6 +221,7 @@ async def _queue_active_service(user_id, service_id, username, plan_id, plan_nam
     )
     await send_message_to_admins(text)
 
+
 # ---------------- Timeout Helpers ---------------- #
 async def _timeout_cancel(state: FSMContext, chat_id: int):
     await asyncio.sleep(120)
@@ -217,6 +232,7 @@ async def _timeout_cancel(state: FSMContext, chat_id: int):
             "⏰ زمان تمدید تمام شد.",
             reply_markup=user_main_menu_keyboard()
         )
+
 
 async def _cancel_timeout(state: FSMContext):
     data = await state.get_data()
