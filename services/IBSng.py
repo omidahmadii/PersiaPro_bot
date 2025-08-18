@@ -1,4 +1,5 @@
-from config import IBS_BASE_URL, IBS_USERNAME, IBS_PASSWORD
+from config import IBS_USERNAME, IBS_PASSWORD, IBS_URL_BASE, IBS_URL_INFO, IBS_URL_EDIT, IBS_URL_CONNECTIONS, \
+    IBS_URL_DELETE
 from bs4 import BeautifulSoup
 import re
 import requests
@@ -6,12 +7,12 @@ import requests
 
 def login():
     # Define the URL and login credentials
-    login_url = 'http://ibs.persiapro.com/IBSng/admin/'
-    username = 'system'
-    password = 'Kent228mud120'
-    # username = IBS_USERNAME
-    # password = IBS_PASSWORD
-    # login_url = IBS_BASE_URL
+    # login_url = 'http://ibs.persiapro.com/IBSng/admin/'
+    # username = 'system'
+    # password = 'Kent228mud120'
+    username = IBS_USERNAME
+    password = IBS_PASSWORD
+    login_url = IBS_URL_BASE
 
     # Create a session to persist cookies
     session = requests.Session()
@@ -36,7 +37,8 @@ def login():
 
 def get_user_id(username):
     session = login()
-    user_info_url = 'http://ibs.persiapro.com/IBSng/admin/user/user_info.php'
+    # user_info_url = 'http://ibs.persiapro.com/IBSng/admin/user/user_info.php'
+    user_info_url = IBS_URL_INFO
     payload = {
         'normal_username_multi': username
     }
@@ -71,7 +73,9 @@ def get_user_id(username):
 def get_user_exp_date(username):
     session = login()
     user_id = get_user_id(username)
-    user_info_url = 'http://ibs.persiapro.com/IBSng/admin/user/user_info.php'
+    # user_info_url = 'http://ibs.persiapro.com/IBSng/admin/user/user_info.php'
+    user_info_url = IBS_URL_INFO
+
     payload = {
         'user_id_multi': user_id
     }
@@ -109,7 +113,9 @@ def get_user_exp_date(username):
 def get_user_start_date(username):
     session = login()
     user_id = get_user_id(username)
-    user_info_url = 'http://ibs.persiapro.com/IBSng/admin/user/user_info.php'
+    # user_info_url = 'http://ibs.persiapro.com/IBSng/admin/user/user_info.php'
+    user_info_url = IBS_URL_INFO
+
     payload = {
         'user_id_multi': user_id
     }
@@ -143,7 +149,9 @@ def get_user_start_date(username):
 
 def user_info_page(user_id):
     session = login()
-    user_info_url = 'http://ibs.persiapro.com/IBSng/admin/user/user_info.php'
+    # user_info_url = 'http://ibs.persiapro.com/IBSng/admin/user/user_info.php'
+    user_info_url = IBS_URL_INFO
+
     payload = {
         'user_id_multi': user_id
     }
@@ -161,7 +169,8 @@ def user_info_page(user_id):
 def change_group(username, group):
     session = login()
     user_id = get_user_id(username)
-    edit_url = 'http://ibs.persiapro.com/IBSng/admin/plugins/edit.php'
+    # edit_url = 'http://ibs.persiapro.com/IBSng/admin/plugins/edit.php'
+    edit_url = IBS_URL_EDIT
     payload = {
         'target': 'user',
         'target_id': user_id,
@@ -176,7 +185,9 @@ def change_group(username, group):
 def change_password(username, password):
     session = login()
     user_id = get_user_id(username)
-    edit_url = 'http://ibs.persiapro.com/IBSng/admin/plugins/edit.php'
+    # edit_url = 'http://ibs.persiapro.com/IBSng/admin/plugins/edit.php'
+    edit_url = IBS_URL_EDIT
+
     payload = {
         'target': 'user',
         'target_id': user_id,
@@ -202,7 +213,9 @@ def change_password(username, password):
 def lock_user(username):
     session = login()
     user_id = get_user_id(username)
-    edit_url = 'http://ibs.persiapro.com/IBSng/admin/plugins/edit.php'
+    # edit_url = 'http://ibs.persiapro.com/IBSng/admin/plugins/edit.php'
+    edit_url = IBS_URL_EDIT
+
     payload = {
         'target': 'user',
         'target_id': user_id,
@@ -224,7 +237,8 @@ def lock_user(username):
 def unlock_user(username):
     session = login()
     user_id = get_user_id(username)
-    edit_url = 'http://ibs.persiapro.com/IBSng/admin/plugins/edit.php'
+    # edit_url = 'http://ibs.persiapro.com/IBSng/admin/plugins/edit.php'
+    edit_url = IBS_URL_EDIT
     payload = {
         'target': 'user',
         'target_id': user_id,
@@ -239,7 +253,9 @@ def unlock_user(username):
 def reset_first_login(username):
     session = login()
     user_id = get_user_id(username)
-    edit_url = 'http://ibs.persiapro.com/IBSng/admin/plugins/edit.php'
+    # edit_url = 'http://ibs.persiapro.com/IBSng/admin/plugins/edit.php'
+    edit_url = IBS_URL_EDIT
+
     payload = {
         'target': 'user',
         'target_id': user_id,
@@ -260,7 +276,8 @@ def reset_first_login(username):
 
 def kill_user(user_id, username):
     session = login()
-    edit_url = 'http://ibs.persiapro.com/IBSng/admin/user/kill_user.php'
+    # edit_url = 'http://ibs.persiapro.com/IBSng/admin/user/kill_user.php'
+    edit_url = IBS_URL_EDIT
     url = 'http://ibs.persiapro.com/IBSng/admin/report/online_users.php'
     response = session.get(url)
     print(response.text)
@@ -282,7 +299,8 @@ def kill_user(user_id, username):
 
 def get_user_password(user_id):
     session = login()
-    edit_url = 'http://ibs.persiapro.com/IBSng/admin/plugins/edit.php'
+    # edit_url = 'http://ibs.persiapro.com/IBSng/admin/plugins/edit.php'
+    edit_url = IBS_URL_EDIT
     payload = {
         'user_id': user_id,
         'edit_user': '1',
@@ -317,7 +335,8 @@ def get_user_password(user_id):
 def reset_relative_exp_date(username):
     session = login()
     user_id = get_user_id(username)
-    edit_url = 'http://ibs.persiapro.com/IBSng/admin/plugins/edit.php'
+    # edit_url = 'http://ibs.persiapro.com/IBSng/admin/plugins/edit.php'
+    edit_url = IBS_URL_EDIT
     payload = {
         'target': 'user',
         'target_id': user_id,
@@ -338,7 +357,9 @@ def reset_relative_exp_date(username):
 def reset_times(username):
     session = login()
     user_id = get_user_id(username)
-    edit_url = 'http://ibs.persiapro.com/IBSng/admin/plugins/edit.php'
+    # edit_url = 'http://ibs.persiapro.com/IBSng/admin/plugins/edit.php'
+    edit_url = IBS_URL_EDIT
+
     payload = {
         'target': 'user',
         'target_id': user_id,
@@ -356,7 +377,9 @@ def reset_times(username):
 def reset_radius_attrs(username):
     session = login()
     user_id = get_user_id(username)
-    edit_url = 'http://ibs.persiapro.com/IBSng/admin/plugins/edit.php'
+    # edit_url = 'http://ibs.persiapro.com/IBSng/admin/plugins/edit.php'
+    edit_url = IBS_URL_EDIT
+
     payload = {
         'target': 'user',
         'target_id': user_id,
@@ -385,7 +408,8 @@ def reset_account_client(username):
 def get_usage_last_n_days(username, days):
     session = login()
     user_id = get_user_id(username)
-    user_info_url = 'http://ibs.persiapro.com/IBSng/admin/report/connections.php'
+    # user_info_url = 'http://ibs.persiapro.com/IBSng/admin/report/connections.php'
+    user_info_url = IBS_URL_CONNECTIONS
     payload = {
         'show_reports': 1,
         'page': 1,
@@ -430,7 +454,8 @@ def get_usage_last_n_days(username, days):
 def delete_user(username):
     session = login()
     user_id = get_user_id(username)
-    delete_url = 'http://ibs.persiapro.com/IBSng/admin/user/del_user.php'
+    # delete_url = 'http://ibs.persiapro.com/IBSng/admin/user/del_user.php'
+    delete_url = IBS_URL_DELETE
     payload = {
         'user_id': user_id,
         'delete': '1',
@@ -463,7 +488,8 @@ def change_queue_level(username, queue_level):
     }
     session = login()
     user_id = get_user_id(username)
-    edit_url = 'http://ibs.persiapro.com/IBSng/admin/plugins/edit.php'
+    # edit_url = 'http://ibs.persiapro.com/IBSng/admin/plugins/edit.php'
+    edit_url = IBS_URL_EDIT
     if queue_level == 0:
         payload = {
             'target': 'user',
@@ -494,7 +520,8 @@ def change_queue_level(username, queue_level):
 def apply_user_radius_attrs(username, radius_attrs):
     session = login()
     user_id = get_user_id(username)
-    edit_url = 'http://ibs.persiapro.com/IBSng/admin/plugins/edit.php'
+    # edit_url = 'http://ibs.persiapro.com/IBSng/admin/plugins/edit.php'
+    edit_url = IBS_URL_EDIT
     payload = {
         'target': 'user',
         'target_id': user_id,
@@ -511,7 +538,8 @@ def apply_user_radius_attrs(username, radius_attrs):
 def get_user_radius_attribute(username):
     session = login()
     user_id = get_user_id(username)
-    user_info_url = 'http://ibs.persiapro.com/IBSng/admin/user/user_info.php'
+    # user_info_url = 'http://ibs.persiapro.com/IBSng/admin/user/user_info.php'
+    user_info_url = IBS_URL_INFO
     payload = {
         'user_id_multi': user_id
     }

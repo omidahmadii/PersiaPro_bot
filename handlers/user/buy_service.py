@@ -127,14 +127,12 @@ async def confirm_and_create(message: Message, state: FSMContext):
     plan_price = plan['price']
     plan_group_name = plan['group_name']
     user_id = message.from_user.id
-    print(plan_group_name)
     # پیدا کردن اکانت آزاد
     free_account = find_free_account()
     if not free_account:
         await state.clear()
         return await message.answer("متأسفانه در حال حاضر اکانت آزادی موجود نیست ❌",
                                     reply_markup=user_main_menu_keyboard())
-
     account_id, account_username, account_password = free_account
 
     try:

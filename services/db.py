@@ -359,7 +359,7 @@ def find_free_account():
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT * FROM accounts
+            SELECT id, username, password FROM accounts
             WHERE status = 'free'
             LIMIT 1
         """)
