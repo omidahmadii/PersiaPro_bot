@@ -197,7 +197,8 @@ def get_all_plans():
                 duration_days,
                 max_users,
                 price,
-                group_name
+                group_name,
+                category
             FROM plans
             ORDER BY order_priority DESC
         """)
