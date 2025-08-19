@@ -15,11 +15,12 @@ from services.db import (
     get_user_balance,
     find_free_account,
     update_user_balance,
-    assign_account_to_order,
+    assign_account_to_order, get_active_locations_by_category,
 )
 from handlers.user.payment import show_payment_info
 
 router = Router()
+
 
 # ---------------- FSM States ---------------- #
 class BuyServiceStates(StatesGroup):
@@ -27,6 +28,7 @@ class BuyServiceStates(StatesGroup):
     choosing_location = State()
     choosing_duration = State()
     confirming = State()
+
 
 # ---------------- Keyboards ---------------- #
 def keyboard_categories():
@@ -38,31 +40,40 @@ def keyboard_categories():
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-def keyboard_locations():
-    rows = [
-        [InlineKeyboardButton(text="🇫🇷 فرانسه", callback_data="buy|location|france")],
-        [InlineKeyboardButton(text="🇹🇷 ترکیه", callback_data="buy|location|turkey")],
-        [InlineKeyboardButton(text="🇮🇷 ایران", callback_data="buy|location|iran")],
-        [InlineKeyboardButton(text="🇬🇧 انگلیس", callback_data="buy|location|england")],
-        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="buy|back|category")],
-    ]
+
+def keyboard_locations(locations: list, back_to="category"):
+    rows = []
+    flags = {
+        "france": "🇫🇷 فرانسه",
+        "turkey": "🇹🇷 ترکیه",
+        "iran": "🇮🇷 ایران",
+        "england": "🇬🇧 انگلیس",
+    }
+    for loc in locations:
+        label = flags.get(loc, loc)
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"buy|location|{loc}")])
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data=f"buy|back|{back_to}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
 
 def keyboard_durations(plans, back_to="category"):
     rows = []
     for plan in plans:
         rows.append([InlineKeyboardButton(
-            text=f"{plan['name']} - {plan['price']} تومان",
+            # text=f"{plan['name']} - {plan['price']} تومان",
+            text=f"{plan['name']}",
             callback_data=f"buy|duration|{plan['id']}"
         )])
     rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data=f"buy|back|{back_to}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
 
 def keyboard_confirm():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ تایید و پرداخت", callback_data="buy|confirm")],
         [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="buy|back|duration")]
     ])
+
 
 # ---------------- Step 0: Entry ---------------- #
 @router.message(F.text == "🛒 خرید سرویس")
@@ -78,6 +89,7 @@ async def start_buy(message: Message, state: FSMContext):
     await state.set_state(BuyServiceStates.choosing_category)
     await message.answer("لطفاً نوع سرویس مورد نظر خود را انتخاب کنید:", reply_markup=keyboard_categories())
 
+
 # ---------------- Step 1: Choose Category ---------------- #
 @router.callback_query(F.data.startswith("buy|category"))
 async def choose_category(callback: CallbackQuery, state: FSMContext):
@@ -85,13 +97,22 @@ async def choose_category(callback: CallbackQuery, state: FSMContext):
     await state.update_data(category=category)
 
     plans = [p for p in get_all_plans() if p["category"] == category]
-
     if category in ("standard", "dual"):
         await state.set_state(BuyServiceStates.choosing_duration)
-        await callback.message.edit_text("مدت زمان سرویس را انتخاب کنید:", reply_markup=keyboard_durations(plans))
+        return await callback.message.edit_text("مدت زمان سرویس را انتخاب کنید:", reply_markup=keyboard_durations(plans))
+
     elif category in ("fixed_ip", "custom_location"):
+        available_locations = get_active_locations_by_category(category)
+        if not available_locations:
+            return await callback.message.edit_text("❌ فعلاً لوکیشنی برای این دسته موجود نیست.")
         await state.set_state(BuyServiceStates.choosing_location)
-        await callback.message.edit_text("ابتدا لوکیشن را انتخاب کنید:", reply_markup=keyboard_locations())
+        return await callback.message.edit_text(
+            "ابتدا لوکیشن را انتخاب کنید:",
+            reply_markup=keyboard_locations(available_locations)
+        )
+    else:
+        return await callback.message.edit_text("❌ دسته نامعتبر است.")
+
 
 # ---------------- Step 2: Choose Location ---------------- #
 @router.callback_query(F.data.startswith("buy|location"))
@@ -101,7 +122,9 @@ async def choose_location(callback: CallbackQuery, state: FSMContext):
 
     plans = [p for p in get_all_plans() if p["location"] == location]
     await state.set_state(BuyServiceStates.choosing_duration)
-    await callback.message.edit_text("مدت زمان سرویس را انتخاب کنید:", reply_markup=keyboard_durations(plans, back_to="location"))
+    await callback.message.edit_text("مدت زمان سرویس را انتخاب کنید:",
+                                     reply_markup=keyboard_durations(plans, back_to="location"))
+
 
 # ---------------- Step 3: Choose Duration ---------------- #
 @router.callback_query(F.data.startswith("buy|duration"))
@@ -127,6 +150,7 @@ async def choose_duration(callback: CallbackQuery, state: FSMContext):
     ]
     await callback.message.edit_text("\n".join(summary), reply_markup=keyboard_confirm())
 
+
 # ---------------- Step 4: Confirm ---------------- #
 @router.callback_query(F.data == "buy|confirm")
 async def confirm_and_create(callback: CallbackQuery, state: FSMContext):
@@ -135,7 +159,8 @@ async def confirm_and_create(callback: CallbackQuery, state: FSMContext):
 
     if not plan:
         await state.clear()
-        return await callback.message.edit_text("خطا در دریافت اطلاعات پلن. دوباره تلاش کنید.", reply_markup=user_main_menu_keyboard())
+        return await callback.message.edit_text("خطا در دریافت اطلاعات پلن. دوباره تلاش کنید.",
+                                                reply_markup=user_main_menu_keyboard())
 
     user_id = callback.from_user.id
     user_balance = get_user_balance(user_id)
@@ -154,7 +179,8 @@ async def confirm_and_create(callback: CallbackQuery, state: FSMContext):
 
     account_id, account_username, account_password = free_account
     try:
-        order_id = insert_order(user_id=user_id, plan_id=plan["id"], username=account_username, price=plan["price"], status="active")
+        order_id = insert_order(user_id=user_id, plan_id=plan["id"], username=account_username, price=plan["price"],
+                                status="active")
         assign_account_to_order(account_id, order_id, plan["id"], "active")
     except Exception as e:
         print(f"خطا در درج سفارش: {e}")
@@ -180,6 +206,7 @@ async def confirm_and_create(callback: CallbackQuery, state: FSMContext):
 
     await state.clear()
 
+
 # ---------------- Back Navigation ---------------- #
 @router.callback_query(F.data.startswith("buy|back"))
 async def go_back(callback: CallbackQuery, state: FSMContext):
@@ -187,7 +214,8 @@ async def go_back(callback: CallbackQuery, state: FSMContext):
 
     if target == "category":
         await state.set_state(BuyServiceStates.choosing_category)
-        await callback.message.edit_text("لطفاً نوع سرویس مورد نظر خود را انتخاب کنید:", reply_markup=keyboard_categories())
+        await callback.message.edit_text("لطفاً نوع سرویس مورد نظر خود را انتخاب کنید:",
+                                         reply_markup=keyboard_categories())
 
     elif target == "location":
         await state.set_state(BuyServiceStates.choosing_location)
@@ -206,4 +234,5 @@ async def go_back(callback: CallbackQuery, state: FSMContext):
         elif category in ("fixed_ip", "custom_location") and location:
             plans = [p for p in get_all_plans() if p["location"] == location]
             await state.set_state(BuyServiceStates.choosing_duration)
-            await callback.message.edit_text("مدت زمان سرویس را انتخاب کنید:", reply_markup=keyboard_durations(plans, back_to="location"))
+            await callback.message.edit_text("مدت زمان سرویس را انتخاب کنید:",
+                                             reply_markup=keyboard_durations(plans, back_to="location"))

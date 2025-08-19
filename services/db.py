@@ -198,7 +198,8 @@ def get_all_plans():
                 max_users,
                 price,
                 group_name,
-                category
+                category,
+                location
             FROM plans
             ORDER BY order_priority DESC
         """)
@@ -694,3 +695,15 @@ def get_active_cards():
             }
             for card_number, owner_name, bank_name in rows
         ]
+
+
+def get_active_locations_by_category(category: str):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT location 
+            FROM plans 
+            WHERE category = ? AND visible = 1 AND location IS NOT NULL
+        """, (category,))
+        return [row["location"] for row in cursor.fetchall()]
