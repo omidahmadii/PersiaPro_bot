@@ -1,19 +1,16 @@
-from aiogram import Router, F, Bot
+from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.filters import Command
-import sqlite3
-
-from aiogram.utils import keyboard
+from aiogram.types import Message
 
 from config import ADMINS
-from handlers.user.tutorial import main_menu_kb
 from keyboards.admin_main_menu import admin_main_menu_keyboard
 from keyboards.user_main_menu import user_main_menu_keyboard
-from services.db import get_accounts_id_by_username, update_account_password_by_username
 from services.IBSng import change_password as ibs_change_password
+from services.db import get_accounts_id_by_username, update_account_password_by_username
+
 router = Router()
+
 
 # تعریف حالت‌ها
 class ChangePasswordState(StatesGroup):
@@ -26,12 +23,12 @@ class ChangePasswordState(StatesGroup):
 async def change_password(message: Message, state: FSMContext):
     user_id = message.from_user.id
     role = "admin" if user_id in ADMINS else "user"
-    if role =="user":
-
-        await message.answer("شما دسترسی لازم برای انجام این عملیات را ندارید.",reply_markup=user_main_menu_keyboard())
+    if role == "user":
+        await message.answer("شما دسترسی لازم برای انجام این عملیات را ندارید.", reply_markup=user_main_menu_keyboard())
         return
     await message.answer("لطفاً نام کاربری موردنظر را وارد کنید.")
     await state.set_state(ChangePasswordState.waiting_for_username)
+
 
 # مرحله ۲: دریافت نام کاربری و بررسی وجود آن
 @router.message(ChangePasswordState.waiting_for_username)
@@ -58,7 +55,7 @@ async def set_new_password(message: Message, state: FSMContext):
     new_password = message.text.strip()
     data = await state.get_data()
     username = data["username"]
-    update_account_password_by_username(username=username,new_password=new_password)
+    update_account_password_by_username(username=username, new_password=new_password)
 
     # بروزرسانی رمز در IBS
     success = await update_password_in_ibs(username, new_password)
@@ -71,6 +68,7 @@ async def set_new_password(message: Message, state: FSMContext):
     main_menu_keyboard = admin_main_menu_keyboard() if role == "admin" else user_main_menu_keyboard()
     await message.answer("✅ رمز عبور با موفقیت تغییر یافت.", reply_markup=main_menu_keyboard)
     await state.clear()
+
 
 # تابع فرضی برای تغییر رمز در IBS
 async def update_password_in_ibs(username: str, new_password: str) -> bool:

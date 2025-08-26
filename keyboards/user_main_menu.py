@@ -4,7 +4,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 def user_main_menu_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="📦 سرویس‌های من"), KeyboardButton(text="💳 شارژ حساب")],
+            [KeyboardButton(text="📦 سرویس‌های من"), KeyboardButton(text="💳 دریافت شماره کارت")],
             [KeyboardButton(text="📄 تمدید سرویس"), KeyboardButton(text="🛒 خرید سرویس")],
             [KeyboardButton(text="🎫 پشتیبانی"),    KeyboardButton(text="📚 آموزش")],
             [KeyboardButton(text="👤 حساب کاربری"), KeyboardButton(text="❓ سوالات متداول")],

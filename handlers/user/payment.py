@@ -26,8 +26,11 @@ def calculate_photo_hash(file_path: str) -> str:
         return hashlib.sha256(f.read()).hexdigest()
 
 
-@router.message(F.text == "💳 شارژ حساب")
-async def show_payment_info(message: Message, state: FSMContext):
+@router.message(F.photo)
+async def catch_any_photo_as_receipt(message: Message, state: FSMContext, bot: Bot):
+    # اگر کاربر داخل استیت خاصی است (مثل PaymentStates.waiting_for_receipt) نذار این هندلر دخالت کنه
+    if await state.get_state():
+        return
     user_id = message.from_user.id
     first_name = message.from_user.first_name
     username = message.from_user.username
@@ -36,58 +39,6 @@ async def show_payment_info(message: Message, state: FSMContext):
     # اگر وجود نداشت، اضافه کن
     if not exists:
         add_user(user_id, first_name, username, role)
-
-    active_cards = get_active_cards()
-
-    if not active_cards:
-        await message.answer(
-            "❌ در حال حاضر هیچ کارت فعالی موجود نیست.",
-            parse_mode="HTML"
-        )
-    else:
-        # متن پایه
-        text = "💳 برای شارژ حساب لطفاً مبلغ مورد نظر را به یکی از شماره کارت‌های زیر واریز کنید:\n\n"
-
-        # اضافه کردن هر کارت به متن
-        for card in active_cards:
-            text += (
-                f"🏦 {card['bank_name']} \n"
-                f"به نام {card['owner_name']}\n"
-                f"<code>\u200F{card['card_number']}</code>\n\n"
-            )
-
-        # ادامه متن ثابت
-        text += (
-            "📸 سپس تصویر فیش پرداخت را ارسال نمایید.\n\n"
-            "<b>\u200Fℹ️ برای کپی کردن شماره کارت روی آن بزنید.</b>"
-        )
-
-        # ارسال پیام
-        await message.answer(
-            text,
-            parse_mode="HTML",
-            reply_markup=payment_keyboard()
-        )
-
-    await state.set_state(PaymentStates.waiting_for_receipt)
-
-    # تایمر ۵ دقیقه‌ای
-    await asyncio.sleep(300)
-    current_state = await state.get_state()
-    if current_state == PaymentStates.waiting_for_receipt:
-        await message.answer("⏳ زمان ارسال فیش تمام شد. بازگشت به منوی اصلی.", reply_markup=user_main_menu_keyboard())
-        await state.clear()
-
-
-@router.message(PaymentStates.waiting_for_receipt)
-async def handle_receipt_or_back(message: Message, state: FSMContext, bot: Bot):
-    if message.text == "🔙 بازگشت به منوی اصلی":
-        await state.clear()
-        return await message.answer("بازگشت به منوی اصلی", reply_markup=user_main_menu_keyboard())
-
-    if not message.photo:
-        return await message.answer("لطفاً تصویر فیش پرداخت را ارسال کنید یا با دکمه بازگشت به منو برگردید.")
-
     photo = message.photo[-1]
     file_id = photo.file_id
     user_id = message.from_user.id
@@ -133,3 +84,4 @@ async def handle_receipt_or_back(message: Message, state: FSMContext, bot: Bot):
             parse_mode="HTML"
         )
     return None
+

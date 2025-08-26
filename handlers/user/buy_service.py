@@ -6,6 +6,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKe
 from typing import Optional, Union   # بالای فایل
 
 from config import ADMINS
+from handlers.user.get_cards import show_cards
 from keyboards.user_main_menu import user_main_menu_keyboard
 from services.IBSng import change_group
 from services.db import (
@@ -19,7 +20,6 @@ from services.db import (
     assign_account_to_order,
     get_active_locations_by_category,
 )
-from handlers.user.payment import show_payment_info
 
 router = Router()
 
@@ -57,7 +57,7 @@ def fair_usage_label(plan: dict) -> str:
         pass
     vol = plan.get("volume_gb")
     if vol:
-        return f"آستانه مصرف منصفانه: {vol} گیگ"
+        return f"{vol} گیگ"
     return "بدون آستانه مشخص"
 
 
@@ -92,9 +92,9 @@ class BuyServiceStates(StatesGroup):
 def keyboard_categories():
     rows = [
         [InlineKeyboardButton(text="استاندارد", callback_data="buy|category|standard")],
-        [InlineKeyboardButton(text="دوکاربره", callback_data="buy|category|dual")],
-        [InlineKeyboardButton(text="آی‌پی ثابت", callback_data="buy|category|fixed_ip")],
-        [InlineKeyboardButton(text="لوکیشن دلخواه قابل تغییر", callback_data="buy|category|custom_location")],
+        # [InlineKeyboardButton(text="دوکاربره", callback_data="buy|category|dual")],
+        # [InlineKeyboardButton(text="آی‌پی ثابت", callback_data="buy|category|fixed_ip")],
+        # [InlineKeyboardButton(text="لوکیشن دلخواه قابل تغییر", callback_data="buy|category|custom_location")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -246,8 +246,7 @@ async def confirm_and_create(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text(
             f"❌ موجودی کافی نیست.\n💰 قیمت: {format_price(plan['price'])} تومان\n💳 موجودی: {format_price(user_balance)} تومان"
         )
-        # await callback.message.answer("بازگشت به منوی اصلی", reply_markup=user_main_menu_keyboard())
-        return await show_payment_info(callback.message, state)
+        return await show_cards(callback.message, state)
 
     free_account = find_free_account()
     if not free_account:

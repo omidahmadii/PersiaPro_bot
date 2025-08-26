@@ -1,24 +1,30 @@
-import asyncio
-from typing import Final, Set
+# handlers/user/tutorial.py
+# اینلاین، بدون تایمر، بدون "بازگشت به منوی اصلی" و بدون "بازگشت به آموزش اتصال"
+# با breadcrumb و smart_edit (text/caption/new-message) + بدون alert/text روی callbacks
+
+from typing import Final, Optional
 
 from aiogram import Router, F
+from aiogram.enums import ParseMode, ContentType
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.types import FSInputFile, Message, ReplyKeyboardMarkup, KeyboardButton
-
-from keyboards.user_main_menu import user_main_menu_keyboard
+from aiogram.types import (
+    FSInputFile,
+    Message,
+    CallbackQuery,
+    InlineKeyboardMarkup,
+)
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 router: Final = Router()
 
 # ---------------------------------------------------------------------------
-# 📁  Static media ------------------------------------------------------------
+# 📁  Static media
 # ---------------------------------------------------------------------------
 MEDIA_DIR: Final = "media"
 
-# Use a tiny helper so we do not repeat FSInputFile everywhere ----------------
-
 def mfile(name: str) -> FSInputFile:
-    """Return an FSInputFile from the MEDIA_DIR."""
     return FSInputFile(f"{MEDIA_DIR}/{name}")
 
 OVPN_FILE = mfile("PersiaPro V1.ovpn")
@@ -26,7 +32,7 @@ OVPN_IMAGES = [mfile(f"ovpn_img0{i}.jpg") for i in range(1, 5)]
 L2TP_IMAGES = [mfile(f"l2tp_img0{i}.jpg") for i in range(1, 3)]
 
 # ---------------------------------------------------------------------------
-# 🗂  States ------------------------------------------------------------------
+# 🗂  States
 # ---------------------------------------------------------------------------
 class Tutorial(StatesGroup):
     menu = State()
@@ -34,235 +40,225 @@ class Tutorial(StatesGroup):
     ios_l2tp_step = State()
     ios_ovpn_step = State()
 
+# ---------------------------------------------------------------------------
+# 🛡  Helpers
+# ---------------------------------------------------------------------------
+async def smart_edit(
+    message: Message,
+    *,
+    text: Optional[str] = None,
+    reply_markup: Optional[InlineKeyboardMarkup] = None,
+    parse_mode: Optional[ParseMode] = ParseMode.HTML,
+):
+    """
+    اگر پیام text داشت => edit_text
+    اگر caption داشت => edit_caption
+    اگر هیچ‌کدوم نبود => answer جدید
+    خطای "message is not modified" نادیده گرفته می‌شود.
+    """
+    try:
+        if text is None:
+            # فقط تغییر کیبورد
+            return await message.edit_reply_markup(reply_markup=reply_markup)
+
+        # اولویت: اگر پیام متنی است
+        if message.text is not None:
+            return await message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+
+        # اگر پیام عکس/ویدیو/سند با کپشن است
+        if message.caption is not None:
+            return await message.edit_caption(caption=text, reply_markup=reply_markup, parse_mode=parse_mode)
+
+        # در غیر اینصورت پیام جدید بده
+        return await message.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
+
+    except TelegramBadRequest as e:
+        s = str(e)
+        if "message is not modified" in s or "there is no text in the message to edit" in s:
+            # در صورت عدم امکان ادیت، پیام جدید بده (fallback)
+            if text is not None:
+                return await message.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
+            return None
+        raise
 
 # ---------------------------------------------------------------------------
-# ⌨️  Keyboards ---------------------------------------------------------------
+# ⌨️  Inline Keyboards
 # ---------------------------------------------------------------------------
-main_menu_kb = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="📱 اندروید"), KeyboardButton(text="📱 آیفون")],
-        [KeyboardButton(text="💻 ویندوز"), KeyboardButton(text="🖥 مک")],
-        [KeyboardButton(text="🐧 لینوکس"), KeyboardButton(text="📺 Smart TV")],
-        [KeyboardButton(text="🎮 کنسول بازی")],
-        # [KeyboardButton(text="🌐 مرورگر (افزونه)"), KeyboardButton(text="🎮 کنسول بازی")],
-        [KeyboardButton(text="🔙 بازگشت به منوی اصلی")],
-    ],
-    resize_keyboard=True,
-)
+def kb_root() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📱 آیفون", callback_data="dev:ios")
+    kb.button(text="📱 اندروید ⛏ به‌زودی", callback_data="noop")
+    kb.button(text="💻 ویندوز ⛏ به‌زودی", callback_data="noop")
+    kb.button(text="🖥 مک ⛏ به‌زودی", callback_data="noop")
+    kb.button(text="🐧 لینوکس ⛏ به‌زودی", callback_data="noop")
+    kb.button(text="📺 Smart TV ⛏ به‌زودی", callback_data="noop")
+    kb.button(text="🎮 کنسول بازی ⛏ به‌زودی", callback_data="noop")
+    kb.adjust(1, 2, 2, 2)
+    return kb.as_markup()
 
-ios_method_kb = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="🔸 آموزش L2TP"), KeyboardButton(text="🔸 آموزش OpenVPN")],
-        [KeyboardButton(text="🔙 بازگشت به آموزش‌ اتصال")],
-    ],
-    resize_keyboard=True,
-)
+def kb_ios_methods() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔸 آموزش L2TP", callback_data="ios:l2tp:start")
+    kb.button(text="🔸 آموزش OpenVPN", callback_data="ios:ovpn:start")
+    kb.button(text="⬅️ بازگشت", callback_data="back:root")
+    kb.adjust(2, 1)
+    return kb.as_markup()
 
-next_step_kb = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="➡️ مرحله بعد")],
-        [KeyboardButton(text="🔙 بازگشت به انتخاب روش آیفون")],
-    ],
-    resize_keyboard=True,
-)
-
-# ---------------------------------------------------------------------------
-# 🔔  Timeout helper ----------------------------------------------------------
-# ---------------------------------------------------------------------------
-TIMEOUT_SECONDS: Final = 600  # 10 minutes
-
-async def _tutorial_timeout(chat_id: int, state: FSMContext, bot_send):
-    """Send timeout message after TIMEOUT_SECONDS if user still in tutorial."""
-    await asyncio.sleep(TIMEOUT_SECONDS)
-    if (await state.get_state()) in {
-        Tutorial.menu.state,
-        Tutorial.ios_method.state,
-        Tutorial.ios_l2tp_step.state,
-        Tutorial.ios_ovpn_step.state,
-    }:
-        await bot_send(
-            chat_id,
-            "⏳ زمان مشاهده بخش آموزش به پایان رسید. بازگشت به منوی اصلی.",
-            reply_markup=user_main_menu_keyboard(),
-        )
-        await state.clear()
+def kb_next(flow: str) -> InlineKeyboardMarkup:
+    # flow ∈ { "l2tp", "ovpn" }
+    kb = InlineKeyboardBuilder()
+    kb.button(text="➡️ مرحله بعد", callback_data=f"step:{flow}:next")
+    kb.button(text="⬅️ بازگشت", callback_data="back:ios_methods")
+    kb.adjust(1, 1)
+    return kb.as_markup()
 
 # ---------------------------------------------------------------------------
-# 🚀  Handlers ----------------------------------------------------------------
+# 🚀  Entry
 # ---------------------------------------------------------------------------
 @router.message(F.text == "📚 آموزش")
 async def start_tutorial(message: Message, state: FSMContext):
-    """Entry point for tutorial menu."""
-    await message.answer("لطفاً دستگاه مورد نظر را انتخاب کنید:", reply_markup=main_menu_kb)
     await state.set_state(Tutorial.menu)
-
-    # Fire‑and‑forget timeout – no blocking of the handler! -------------------
-    asyncio.create_task(_tutorial_timeout(message.chat.id, state, message.bot.send_message))
-
-
-# -------------------- iOS root menu -----------------------------------------
-@router.message(F.text == "📱 آیفون")
-async def ios_methods(message: Message, state: FSMContext):
-    text = (
-        "👋 خوش اومدی به بخش آموزش اتصال.\n\n"
-        "🔻 اگه اپلیکیشن OpenVPN رو نصب داری یا می‌تونی از App Store نصبش کنی، اون رو انتخاب کن (پیشنهاد ما).\n\n"
-        "🔹 اگر هیچ دسترسی نداری، ابتدا از روش L2TP استفاده کن. بعداً وقتی تونستی، حتماً به OpenVPN سوییچ کن چون:\n\n"
-        "👇 لطفاً یکی از گزینه‌های زیر رو انتخاب کن:"
+    await message.answer(
+        "🏷️ <b>آموزش</b>\n"
+        "دستگاه مورد نظر را انتخاب کنید:",
+        reply_markup=kb_root(),
+        parse_mode=ParseMode.HTML,
     )
-    await message.answer(text, reply_markup=ios_method_kb)
+
+# ---------------------------------------------------------------------------
+# 📱 iOS
+# ---------------------------------------------------------------------------
+@router.callback_query(F.data == "dev:ios")
+async def ios_methods(call: CallbackQuery, state: FSMContext):
     await state.set_state(Tutorial.ios_method)
-
-
-# -------------------- Android placeholder -----------------------------------
-@router.message(F.text == "📱 اندروید")
-async def android_placeholder(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer(
-        "⛏ این بخش در حال توسعه است. به‌زودی فعال خواهد شد!",
-        reply_markup=user_main_menu_keyboard(),
+    text = (
+        "🏷️ <b>آموزش › iOS</b>\n\n"
+        "اگر امکانش هست، <b>OpenVPN</b> را نصب و استفاده کنید (پیشنهاد ما).\n"
+        "اگر دسترسی ندارید، فعلاً از <b>L2TP</b> استفاده کنید و بعداً به OpenVPN سویچ کنید.\n\n"
+        "👇 یکی را انتخاب کنید:"
     )
-
-@router.message(F.text == "💻 ویندوز")
-async def android_placeholder(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer(
-        "⛏ این بخش در حال توسعه است. به‌زودی فعال خواهد شد!",
-        reply_markup=user_main_menu_keyboard(),
-    )
-
-
-@router.message(F.text == "🖥 مک")
-async def android_placeholder(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer(
-        "⛏ این بخش در حال توسعه است. به‌زودی فعال خواهد شد!",
-        reply_markup=user_main_menu_keyboard(),
-    )
-
-
-@router.message(F.text == "🐧 لینوکس")
-async def android_placeholder(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer(
-        "⛏ این بخش در حال توسعه است. به‌زودی فعال خواهد شد!",
-        reply_markup=user_main_menu_keyboard(),
-    )
-
-
-@router.message(F.text == "📺 Smart TV")
-async def android_placeholder(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer(
-        "⛏ این بخش در حال توسعه است. به‌زودی فعال خواهد شد!",
-        reply_markup=user_main_menu_keyboard(),
-    )
-
-@router.message(F.text == "🎮 کنسول بازی")
-async def android_placeholder(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer(
-        "⛏ این بخش در حال توسعه است. به‌زودی فعال خواهد شد!",
-        reply_markup=user_main_menu_keyboard(),
-    )
-
+    await smart_edit(call.message, text=text, reply_markup=kb_ios_methods(), parse_mode=ParseMode.HTML)
+    # پاسخِ callback بدون متن/هشدار (سریع و بی‌صدا)
+    await call.answer()
 
 # ---------------------------------------------------------------------------
-# 📚  L2TP steps --------------------------------------------------------------
+# 🧱 دکمه‌های به‌زودی (بی‌صدا)
 # ---------------------------------------------------------------------------
-@router.message(F.text == "🔸 آموزش L2TP")
-async def start_l2tp(message: Message, state: FSMContext):
-    await state.update_data(step=0)
-    await message.answer(
-        "وارد قسمت Settings گوشی شده ...",
-        reply_markup=next_step_kb,
-    )
+@router.callback_query(F.data == "noop")
+async def noop_silent(call: CallbackQuery):
+    # هیچ کاری نکن؛ فقط ack بی‌صدا تا لودینگ متوقف شود
+    await call.answer()
+
+# ---------------------------------------------------------------------------
+# 📚  L2TP steps (iOS)
+# ---------------------------------------------------------------------------
+@router.callback_query(F.data == "ios:l2tp:start")
+async def start_l2tp(call: CallbackQuery, state: FSMContext):
     await state.set_state(Tutorial.ios_l2tp_step)
+    await state.update_data(step=0)
+    text = (
+        "🏷️ <b>آموزش › iOS › L2TP</b>\n"
+        "مرحله ۱: از Settings → VPN → <b>Add VPN Configuration</b>."
+    )
+    await smart_edit(call.message, text=text, reply_markup=kb_next("l2tp"), parse_mode=ParseMode.HTML)
+    await call.answer()
 
-
-@router.message(Tutorial.ios_l2tp_step, F.text == "➡️ مرحله بعد")
-async def next_l2tp_step(message: Message, state: FSMContext):
+@router.callback_query(F.data == "step:l2tp:next")
+async def next_l2tp_step(call: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    step = data.get("step", 0) + 1
+    step = int(data.get("step", 0)) + 1
     await state.update_data(step=step)
 
     if step == 1:
-        await message.answer_photo(
+        await call.message.answer_photo(
             photo=L2TP_IMAGES[0],
-            caption="📸 ...",
-            reply_markup=next_step_kb,
+            caption="📸 نمونهٔ تنظیمات L2TP – فیلدهای Server / Account / Password را وارد کنید.",
+            reply_markup=kb_next("l2tp"),
         )
     elif step == 2:
-        await state.clear()
-        await message.answer_photo(
+        await call.message.answer_photo(
             photo=L2TP_IMAGES[1],
-            caption="📸 ...",
-            reply_markup=user_main_menu_keyboard(),
+            caption="📸 اتصال برقرار شد ✅ اگر مشکلی بود به پشتیبانی پیام بده.",
         )
-
+        await state.clear()
+    await call.answer()
 
 # ---------------------------------------------------------------------------
-# 📚  OpenVPN steps -----------------------------------------------------------
+# 📚  OpenVPN steps (iOS)
 # ---------------------------------------------------------------------------
-@router.message(F.text == "🔸 آموزش OpenVPN")
-async def start_ovpn(message: Message, state: FSMContext):
+@router.callback_query(F.data == "ios:ovpn:start")
+async def start_ovpn(call: CallbackQuery, state: FSMContext):
     await state.set_state(Tutorial.ios_ovpn_step)
     await state.update_data(step=0)
-    await message.answer(
-        "مرحله ۱:\nاپلیکیشن OpenVPN Connect را از App Store نصب کنید:\n"
-        "🔗 https://apps.apple.com/us/app/openvpn-connect/id590379981",
-        reply_markup=next_step_kb,
+    text = (
+        "🏷️ <b>آموزش › iOS › OpenVPN</b>\n"
+        "مرحله ۱: اپ <b>OpenVPN Connect</b> را از App Store نصب کنید:\n"
+        "🔗 https://apps.apple.com/us/app/openvpn-connect/id590379981"
     )
+    await smart_edit(call.message, text=text, reply_markup=kb_next("ovpn"), parse_mode=ParseMode.HTML)
+    await call.answer()
 
-
-@router.message(Tutorial.ios_ovpn_step, F.text == "➡️ مرحله بعد")
-async def next_ovpn_step(message: Message, state: FSMContext):
+@router.callback_query(F.data == "step:ovpn:next")
+async def next_ovpn_step(call: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    step = data.get("step", 0) + 1
+    step = int(data.get("step", 0)) + 1
     await state.update_data(step=step)
 
     if step == 1:
-        await message.answer_document(OVPN_FILE, caption="🔐 فایل تنظیمات ...")
-        await message.answer_photo(
-            photo=OVPN_IMAGES[0],
-            caption="📸 ...",
-            reply_markup=next_step_kb,
+        await call.message.answer_document(
+            OVPN_FILE,
+            caption="🔐 فایل تنظیمات OpenVPN را ایمپورت کنید.",
+        )
+        await call.message.answer_photo(
+            OVPN_IMAGES[0],
+            caption="📸 وارد اپ شوید و روی Import بزنید.",
+            reply_markup=kb_next("ovpn"),
         )
     elif step == 2:
-        await message.answer_photo(OVPN_IMAGES[1], caption="📸 ...", reply_markup=next_step_kb)
+        await call.message.answer_photo(
+            OVPN_IMAGES[1],
+            caption="📸 پروفایل آماده است.",
+            reply_markup=kb_next("ovpn"),
+        )
     elif step == 3:
-        await message.answer_photo(OVPN_IMAGES[2], caption="📸 ...", reply_markup=next_step_kb)
+        await call.message.answer_photo(
+            OVPN_IMAGES[2],
+            caption="📸 دکمهٔ Connect را بزنید.",
+            reply_markup=kb_next("ovpn"),
+        )
     elif step == 4:
-        await state.clear()
-        await message.answer_photo(
+        await call.message.answer_photo(
             OVPN_IMAGES[3],
-            caption="📸 ...",
-            reply_markup=next_step_kb,
+            caption="📸 اتصال برقرار شد ✅",
         )
-        await message.answer_document(
+        await call.message.answer_document(
             OVPN_FILE,
-            caption="🔐 فایل تنظیمات OpenVPN ...",
-            reply_markup=user_main_menu_keyboard(),
+            caption="🔐 اگر نیاز بود دوباره فایل کانفیگ:",
         )
-
+        await state.clear()
+    await call.answer()
 
 # ---------------------------------------------------------------------------
-# 🔙  Back buttons ------------------------------------------------------------
+# 🔙  Backهای داخل آموزش
 # ---------------------------------------------------------------------------
-@router.message(F.text == "🔙 بازگشت به انتخاب روش آیفون")
-async def back_to_select_methods(message: Message, state: FSMContext):
-    await message.answer("روش اتصال را انتخاب کنید:", reply_markup=ios_method_kb)
-    await state.set_state(Tutorial.ios_method)
-
-
-@router.message(F.text == "🔙 بازگشت به آموزش‌ اتصال")
-async def back_to_ios_methods(message: Message, state: FSMContext):
-    await message.answer("لطفاً دستگاه مورد نظر را انتخاب کنید:", reply_markup=main_menu_kb)
+@router.callback_query(F.data == "back:root")
+async def back_to_root(call: CallbackQuery, state: FSMContext):
     await state.set_state(Tutorial.menu)
+    await smart_edit(
+        call.message,
+        text="🏷️ <b>آموزش</b>\nدستگاه مورد نظر را انتخاب کنید:",
+        reply_markup=kb_root(),
+        parse_mode=ParseMode.HTML,
+    )
+    await call.answer()
 
-
-@router.message(F.text == "🔙 بازگشت به منوی اصلی")
-async def back_to_main(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("بازگشت به منوی اصلی", reply_markup=user_main_menu_keyboard())
-
-
+@router.callback_query(F.data == "back:ios_methods")
+async def back_to_ios_methods(call: CallbackQuery, state: FSMContext):
+    await state.set_state(Tutorial.ios_method)
+    await smart_edit(
+        call.message,
+        text="🏷️ <b>آموزش › iOS</b>\nروش اتصال را انتخاب کنید:",
+        reply_markup=kb_ios_methods(),
+        parse_mode=ParseMode.HTML,
+    )
+    await call.answer()

@@ -5,7 +5,7 @@ from aiogram.enums import ParseMode
 
 from config import BOT_TOKEN
 from handlers.admin import verify_transactions
-from handlers.user import placeholder, feedback
+from handlers.user import placeholder, feedback, get_cards
 from handlers.user import start, buy_service, my_services, account, tutorial, contact_support, payment, renew_service, \
     FAQ
 from services.db import create_tables
@@ -39,6 +39,7 @@ async def main():
         renew_service.router,
         change_password.router,
         feedback.router,
+        get_cards.router,
 
         FAQ.router,
         placeholder.router,
