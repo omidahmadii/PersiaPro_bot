@@ -9,13 +9,15 @@ from config import DB_PATH, ADMINS
 from keyboards.admin_main_menu import admin_main_menu_keyboard
 from services.db import get_user_telegram_id_by_txn_id, get_user_balance
 
+from typing import Optional  # بالای فایل اضافه کن
+
 router = Router()
 
 MIN_TOPUP = 1000  # 1,000 تومان
 MAX_TOPUP = 50000000  # 50,000,000 تومان (دلخواه)
 
 
-def parse_amount(text: str) -> int | None:
+def parse_amount(text: str) -> Optional[int]:
     # فقط رقم‌ها را نگه می‌داریم (تا اگر کسی با کاما/فاصله نوشت هم اوکی باشد)
     digits = ''.join(ch for ch in (text or '') if ch.isdigit())
     if not digits:
