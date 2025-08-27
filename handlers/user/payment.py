@@ -8,11 +8,9 @@ from aiogram.types import Message
 from services.db import get_active_cards
 
 from config import ADMINS
-from keyboards.payment import payment_keyboard
 from keyboards.user_main_menu import user_main_menu_keyboard
 from services.db import insert_transaction, get_all_photo_hashes, ensure_user_exists, add_user
 import hashlib
-
 
 router = Router()
 
@@ -84,4 +82,3 @@ async def catch_any_photo_as_receipt(message: Message, state: FSMContext, bot: B
             parse_mode="HTML"
         )
     return None
-

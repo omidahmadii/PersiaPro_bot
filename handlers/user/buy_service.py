@@ -1,13 +1,26 @@
+# handlers/user/buy_service.py
+
 import asyncio
+from typing import Optional
+
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
-from typing import Optional, Union   # بالای فایل
+from aiogram.types import Message, CallbackQuery
 
 from config import ADMINS
 from handlers.user.get_cards import show_cards
 from keyboards.user_main_menu import user_main_menu_keyboard
+from keyboards.plan_picker import (
+    make_initial_buy_keyboard,
+    keyboard_durations,
+    keyboard_confirm,
+    keyboard_locations,
+    category_label,
+    location_label,
+    fair_usage_label,
+    format_price,
+)
 from services.IBSng import change_group
 from services.db import (
     ensure_user_exists,
@@ -25,56 +38,13 @@ router = Router()
 
 
 # ---------------- Helpers ---------------- #
-def category_label(category: str) -> str:
-    mapping = {
-        "standard": "معمولی",
-        "dual": "دوکاربره",
-        "fixed_ip": "آی‌پی ثابت",
-        "custom_location": "لوکیشن دلخواه قابل تغییر",
-    }
-    return mapping.get(category or "", "نامشخص")
-
-
-def location_label(location: Optional[str]) -> str:
-    mapping = {
-        "france": "🇫🇷 فرانسه",
-        "turkey": "🇹🇷 ترکیه",
-        "iran": "🇮🇷 ایران",
-        "england": "🇬🇧 انگلیس",
-        "global": "🌐 گلوبال",
-        None: "ندارد",
-        "": "ندارد",
-    }
-    return mapping.get(location, location or "ندارد")
-
-
-def fair_usage_label(plan: dict) -> str:
-    # نمایش حجم به‌عنوان آستانه مصرف منصفانه (FUP)
-    try:
-        if int(plan.get("is_unlimited") or 0) == 1:
-            return "نامحدود (مصرف منصفانه)"
-    except Exception:
-        pass
-    vol = plan.get("volume_gb")
-    if vol:
-        return f"{vol} گیگ"
-    return "بدون آستانه مشخص"
-
-
-def format_price(amount: Union[int, float]) -> str:
-    try:
-        return f"{int(amount):,}"
-    except Exception:
-        return str(amount)
-
-
 async def edit_then_show_main_menu(
     message: Message,
     text: str,
     *,
     parse_mode: Optional[str] = None
 ):
-    # اول متن پیام فعلی ادیت می‌شود (بدون ReplyKeyboard)
+    # متن پیام فعلی ادیت می‌شود (برای CallbackQuery‌ها)
     await message.edit_text(text, parse_mode=parse_mode)
     # سپس یک پیام جدید با ReplyKeyboardMarkup ارسال می‌شود
     await message.answer("بازگشت به منوی اصلی", reply_markup=user_main_menu_keyboard())
@@ -88,51 +58,6 @@ class BuyServiceStates(StatesGroup):
     confirming = State()
 
 
-# ---------------- Keyboards ---------------- #
-def keyboard_categories():
-    rows = [
-        [InlineKeyboardButton(text="استاندارد", callback_data="buy|category|standard")],
-        # [InlineKeyboardButton(text="دوکاربره", callback_data="buy|category|dual")],
-        # [InlineKeyboardButton(text="آی‌پی ثابت", callback_data="buy|category|fixed_ip")],
-        # [InlineKeyboardButton(text="لوکیشن دلخواه قابل تغییر", callback_data="buy|category|custom_location")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def keyboard_locations(locations: list, back_to="category"):
-    rows = []
-    flags = {
-        "france": "🇫🇷 فرانسه",
-        "turkey": "🇹🇷 ترکیه",
-        "iran": "🇮🇷 ایران",
-        "england": "🇬🇧 انگلیس",
-    }
-    for loc in locations:
-        label = flags.get(loc, loc)
-        rows.append([InlineKeyboardButton(text=label, callback_data=f"buy|location|{loc}")])
-    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data=f"buy|back|{back_to}")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def keyboard_durations(plans, back_to="category"):
-    rows = []
-    for plan in plans:
-        label = f"{plan['name']} • {fair_usage_label(plan)} • {format_price(plan['price'])} تومان"
-        rows.append([InlineKeyboardButton(
-            text=label,
-            callback_data=f"buy|duration|{plan['id']}"
-        )])
-    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data=f"buy|back|{back_to}")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def keyboard_confirm():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ تایید و پرداخت", callback_data="buy|confirm")],
-        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="buy|back|duration")]
-    ])
-
-
 # ---------------- Step 0: Entry ---------------- #
 @router.message(F.text == "🛒 خرید سرویس")
 async def start_buy(message: Message, state: FSMContext):
@@ -144,8 +69,25 @@ async def start_buy(message: Message, state: FSMContext):
     if not ensure_user_exists(user_id=user_id):
         add_user(user_id, first_name, username, role)
 
-    await state.set_state(BuyServiceStates.choosing_category)
-    await message.answer("لطفاً نوع سرویس مورد نظر خود را انتخاب کنید:", reply_markup=keyboard_categories())
+    # همهٔ پلن‌ها را می‌خوانیم و تصمیم می‌گیریم چه کیبوردی نمایش دهیم
+    all_plans = get_all_plans()
+    kind, markup, only_category, _plans_for_only_category = make_initial_buy_keyboard(all_plans)
+
+    if kind == "categories":
+        # چند دسته فعال داریم → مرحله انتخاب دسته
+        await state.set_state(BuyServiceStates.choosing_category)
+        await message.answer("لطفاً نوع سرویس مورد نظر خود را انتخاب کنید:", reply_markup=markup)
+        return
+
+    # فقط یک دستهٔ فعال داریم → مستقیم می‌رویم سراغ انتخاب مدت
+    if only_category:  # اگر دسته موجود بود، برای مسیر برگشت ذخیره‌اش می‌کنیم
+        await state.update_data(category=only_category)
+    await state.set_state(BuyServiceStates.choosing_duration)
+    text = (
+        "مدت زمان سرویس را انتخاب کنید:\n"
+        "ℹ️ این سرویس‌ها دارای «آستانه مصرف منصفانه» هستند؛ با عبور از آستانه، سرویس قطع نمی‌شود."
+    )
+    await message.answer(text, reply_markup=markup)
 
 
 # ---------------- Step 1: Choose Category ---------------- #
@@ -155,7 +97,7 @@ async def choose_category(callback: CallbackQuery, state: FSMContext):
     await state.update_data(category=category)
 
     # فهرست پلن‌ها براساس دسته
-    plans = [p for p in get_all_plans() if p["category"] == category]
+    plans = [p for p in get_all_plans() if p.get("category") == category]
 
     # برای standard و dual و custom_location مستقیم می‌رویم سراغ مدت زمان
     if category in ("standard", "dual", "custom_location"):
@@ -202,18 +144,23 @@ async def choose_location(callback: CallbackQuery, state: FSMContext):
 async def choose_duration(callback: CallbackQuery, state: FSMContext):
     _, _, plan_id = callback.data.split("|")
     plans = get_all_plans()
-    selected_plan = next((p for p in plans if str(p["id"]) == plan_id), None)
+    selected_plan = next((p for p in plans if str(p.get("id")) == plan_id), None)
 
     if not selected_plan:
         return await callback.answer("پلن معتبر یافت نشد", show_alert=True)
 
-    await state.update_data(plan=selected_plan)
+    # اینجا علاوه بر plan، category/location را هم در state ذخیره می‌کنیم تا «برگشت» از تایید، درست کار کند
+    await state.update_data(
+        plan=selected_plan,
+        category=selected_plan.get("category"),
+        location=selected_plan.get("location"),
+    )
     await state.set_state(BuyServiceStates.confirming)
 
     data = await state.get_data()
     cat_text = category_label(data.get("category"))
     loc_text = location_label(selected_plan.get("location"))
-    fup_text = fair_usage_label(selected_plan)
+    fup_text = fair_usage_label(selected_plan)  # نمایش FUP فقط در مرحله تایید
     price_text = format_price(selected_plan["price"])
 
     summary = [
@@ -224,7 +171,9 @@ async def choose_duration(callback: CallbackQuery, state: FSMContext):
         f"📅 مدت زمان: {selected_plan['name']}",
         f"💰 مبلغ: {price_text} تومان",
         "",
-        "ℹ️ توجه: «آستانه مصرف منصفانه» به معنی قطع سرویس بعد از اتمام نیست."
+        "ℹ️ توجه: «مصرف منصفانه» به معنی قطع سرویس بعد از اتمام نیست.",
+        "",
+        "لطفاً تایید کنید:",
     ]
     return await callback.message.edit_text("\n".join(summary), reply_markup=keyboard_confirm())
 
@@ -268,7 +217,10 @@ async def confirm_and_create(callback: CallbackQuery, state: FSMContext):
         await state.clear()
         return await edit_then_show_main_menu(callback.message, "❌ خطایی در ثبت سفارش رخ داد.")
 
+    # تغییر گروه در IBSng
     change_group(username=account_username, group=plan["group_name"])
+
+    # بروزرسانی موجودی
     new_balance = user_balance - plan["price"]
     update_user_balance(user_id, new_balance)
 
@@ -283,6 +235,7 @@ async def confirm_and_create(callback: CallbackQuery, state: FSMContext):
         reply_markup=user_main_menu_keyboard()
     )
 
+    # اطلاع به ادمین‌ها
     admin_message = (
         f"📢 کاربر {callback.from_user.full_name} (ID: {user_id})\n"
         f"پلن: {plan['name']}\n"
@@ -304,11 +257,24 @@ async def go_back(callback: CallbackQuery, state: FSMContext):
     _, _, target = callback.data.split("|")
 
     if target == "category":
-        await state.set_state(BuyServiceStates.choosing_category)
-        return await callback.message.edit_text(
-            "لطفاً نوع سرویس مورد نظر خود را انتخاب کنید:",
-            reply_markup=keyboard_categories()
-        )
+        # اگر چند دسته داشته‌ایم، دوباره همان لیست را نشان می‌دهیم
+        all_plans = get_all_plans()
+        kind, markup, only_category, _ = make_initial_buy_keyboard(all_plans)
+
+        if kind == "categories":
+            await state.set_state(BuyServiceStates.choosing_category)
+            text = "لطفاً نوع سرویس مورد نظر خود را انتخاب کنید:"
+            return await callback.message.edit_text(text, reply_markup=markup)
+        else:
+            # فقط یک دسته داریم → مستقیم به مدت‌ها برگردیم
+            if only_category:
+                await state.update_data(category=only_category)
+            await state.set_state(BuyServiceStates.choosing_duration)
+            text = (
+                "مدت زمان سرویس را انتخاب کنید:\n"
+                "ℹ️ این سرویس‌ها دارای «آستانه مصرف منصفانه» هستند؛ با عبور از آستانه، سرویس قطع نمی‌شود."
+            )
+            return await callback.message.edit_text(text, reply_markup=markup)
 
     elif target == "location":
         data = await state.get_data()
@@ -324,11 +290,20 @@ async def go_back(callback: CallbackQuery, state: FSMContext):
 
     elif target == "duration":
         data = await state.get_data()
+        plan = data.get("plan")
         category = data.get("category")
         location = data.get("location")
 
+        # اگر category/location در state نبود، از plan بازسازی کن
+        if not category and plan:
+            category = plan.get("category")
+            await state.update_data(category=category)
+        if not location and plan:
+            location = plan.get("location")
+            await state.update_data(location=location)
+
         if category in ("standard", "dual", "custom_location"):
-            plans = [p for p in get_all_plans() if p["category"] == category]
+            plans = [p for p in get_all_plans() if p.get("category") == category]
             await state.set_state(BuyServiceStates.choosing_duration)
             text = (
                 "مدت زمان سرویس را انتخاب کنید:\n"
@@ -343,7 +318,27 @@ async def go_back(callback: CallbackQuery, state: FSMContext):
                 "مدت زمان سرویس را انتخاب کنید:\n"
                 "ℹ️ این سرویس‌ها دارای «آستانه مصرف منصفانه» هستند؛ با عبور از آستانه، سرویس قطع نمی‌شود."
             )
-            return await callback.message.edit_text(text, reply_markup=keyboard_durations(plans, back_to="location"))
+            return await callback.message.edit_text(
+                text,
+                reply_markup=keyboard_durations(plans, back_to="location")
+            )
+
+        # اگر هنوز چیزی پیدا نشد، برگرد به مرحلهٔ اول
+        all_plans = get_all_plans()
+        kind, markup, only_category, _ = make_initial_buy_keyboard(all_plans)
+        if kind == "categories":
+            await state.set_state(BuyServiceStates.choosing_category)
+            text = "لطفاً نوع سرویس مورد نظر خود را انتخاب کنید:"
+            return await callback.message.edit_text(text, reply_markup=markup)
+        else:
+            if only_category:
+                await state.update_data(category=only_category)
+            await state.set_state(BuyServiceStates.choosing_duration)
+            text = (
+                "مدت زمان سرویس را انتخاب کنید:\n"
+                "ℹ️ این سرویس‌ها دارای «آستانه مصرف منصفانه» هستند؛ با عبور از آستانه، سرویس قطع نمی‌شود."
+            )
+            return await callback.message.edit_text(text, reply_markup=markup)
 
     # fallback
     return
