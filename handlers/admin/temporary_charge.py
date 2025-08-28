@@ -69,7 +69,6 @@ async def receive_username_and_charge(msg: Message, state: FSMContext, bot: Bot)
     try:
         # اجرای عملیات IBS
         temporary_charge(username)
-
     except Exception as e:
         await state.clear()
         await msg.answer(

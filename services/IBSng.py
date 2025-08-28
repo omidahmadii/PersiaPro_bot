@@ -1,38 +1,32 @@
+import re
+
+import requests
+from bs4 import BeautifulSoup
+
 from config import IBS_USERNAME, IBS_PASSWORD, IBS_URL_BASE, IBS_URL_INFO, IBS_URL_EDIT, IBS_URL_CONNECTIONS, \
     IBS_URL_DELETE
-from bs4 import BeautifulSoup
-import re
-import requests
 
 
 def login():
-    # Define the URL and login credentials
-    # login_url = 'http://ibs.persiapro.com/IBSng/admin/'
-    # username = 'system'
-    # password = 'Kent228mud120'
-    username = IBS_USERNAME
-    password = IBS_PASSWORD
-    login_url = IBS_URL_BASE
-
     # Create a session to persist cookies
     session = requests.Session()
 
     # Define the payload for the login form
     payload = {
-        'username': username,
-        'password': password
+        'username': IBS_USERNAME,
+        'password': IBS_PASSWORD
     }
 
     # Perform the login request
-    response = session.post(login_url, data=payload)
+    response = session.post(IBS_URL_BASE, data=payload)
     # Check if the login was successful
     if response.ok:
         return session
     else:
         print("Login failed!")
-        print("Status code:", response.status_code)
-        print("Response:", response.text)
-        exit()
+        # print("Status code:", response.status_code)
+        # print("Response:", response.text)
+        # exit()
 
 
 def get_user_id(username):
@@ -405,12 +399,6 @@ def reset_account_client(username):
     reset_radius_attrs(username)
 
 
-def temporary_charge(username):
-    reset_times(username)
-    change_group(username, '1-Hour')
-    unlock_user(username)
-    reset_radius_attrs(username)
-
 def get_usage_last_n_days(username, days):
     session = login()
     user_id = get_user_id(username)
@@ -544,7 +532,6 @@ def apply_user_radius_attrs(username, radius_attrs):
 def get_user_radius_attribute(username):
     session = login()
     user_id = get_user_id(username)
-    # user_info_url = 'http://ibs.persiapro.com/IBSng/admin/user/user_info.php'
     user_info_url = IBS_URL_INFO
     payload = {
         'user_id_multi': user_id
@@ -563,3 +550,53 @@ def get_user_radius_attribute(username):
                 return attributes  # خروج از تابع بعد از پیدا کردن اولین td معتبر
 
     return None  # اگر چیزی پیدا نشد
+
+
+def temporary_charge(username):
+    session = login()
+    user_id = get_user_id(username)
+
+    payload = {
+        'target': 'user',
+        'target_id': user_id,
+        'update': '1',
+        'edit_tpl_cs': 'rel_exp_date,abs_exp_date,first_login',
+        'tab1_selected': 'Exp_Dates',
+        'attr_update_method_0': 'relExpDate',
+        'attr_update_method_1': 'absExpDate',
+        'attr_update_method_2': 'firstLogin',
+        'reset_first_login': 't',
+    }
+    session.post(IBS_URL_EDIT, data=payload)
+
+    payload = {
+        'target': 'user',
+        'target_id': user_id,
+        'update': '1',
+        'edit_tpl_cs': 'group_name',
+        'attr_update_method_0': 'groupName',
+        'group_name': '1-Hour'
+    }
+    session.post(IBS_URL_EDIT, data=payload)
+
+    payload = {
+        'target': 'user',
+        'target_id': user_id,
+        'update': '1',
+        'edit_tpl_cs': 'lock',
+        'tab1_selected': 'Main',
+        'attr_update_method_0': 'lock',
+    }
+    session.post(IBS_URL_EDIT, data=payload)
+
+    payload = {
+        'target': 'user',
+        'target_id': user_id,
+        'update': '1',
+        'edit_tpl_cs': 'radius_attrs',
+        'tab1_selected': 'Misc',
+        'attr_update_method_0': 'radiusAttrs',
+    }
+    session.post(IBS_URL_EDIT, data=payload)
+
+
