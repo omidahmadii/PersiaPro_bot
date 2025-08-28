@@ -1,19 +1,17 @@
 import asyncio
-from aiogram import Bot, Dispatcher
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
+import logging
+import sys
 
-from config import BOT_TOKEN
-from handlers.admin import verify_transactions
+from aiogram import Dispatcher
+
+from handlers.admin import verify_transactions, temporary_charge
+from handlers.shared import change_password
 from handlers.user import placeholder, feedback, get_cards
 from handlers.user import start, buy_service, my_services, account, tutorial, contact_support, payment, renew_service, \
     FAQ
+from services.bot_instance import bot
 from services.db import create_tables
 from services.scheduler import scheduler  # همون فایلی که تسک رو نوشتی
-from handlers.shared import change_password
-
-from services.bot_instance import bot
-import logging, sys
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,6 +38,7 @@ async def main():
         change_password.router,
         feedback.router,
         get_cards.router,
+        temporary_charge.router,
 
         FAQ.router,
         placeholder.router,

@@ -405,6 +405,12 @@ def reset_account_client(username):
     reset_radius_attrs(username)
 
 
+def temporary_charge(username):
+    reset_times(username)
+    change_group(username, '1-Hour')
+    unlock_user(username)
+    reset_radius_attrs(username)
+
 def get_usage_last_n_days(username, days):
     session = login()
     user_id = get_user_id(username)
