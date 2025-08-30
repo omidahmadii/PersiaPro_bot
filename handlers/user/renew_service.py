@@ -22,6 +22,7 @@ from keyboards.plan_picker import (
     location_label,
     fair_usage_label,
     format_price,
+    normalize_category
 )
 from services import IBSng
 from services.IBSng import change_group
