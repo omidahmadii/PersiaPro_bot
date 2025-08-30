@@ -20,6 +20,8 @@ from keyboards.plan_picker import (
     location_label,
     fair_usage_label,
     format_price,
+    normalize_category,
+
 )
 from services.IBSng import change_group
 from services.db import (
@@ -39,10 +41,10 @@ router = Router()
 
 # ---------------- Helpers ---------------- #
 async def edit_then_show_main_menu(
-    message: Message,
-    text: str,
-    *,
-    parse_mode: Optional[str] = None
+        message: Message,
+        text: str,
+        *,
+        parse_mode: Optional[str] = None
 ):
     # متن پیام فعلی ادیت می‌شود (برای CallbackQuery‌ها)
     await message.edit_text(text, parse_mode=parse_mode)
@@ -97,7 +99,7 @@ async def choose_category(callback: CallbackQuery, state: FSMContext):
     await state.update_data(category=category)
 
     # فهرست پلن‌ها براساس دسته
-    plans = [p for p in get_all_plans() if p.get("category") == category]
+    plans = [p for p in get_all_plans() if normalize_category(p.get("category")) == category]
 
     # برای standard و dual و custom_location مستقیم می‌رویم سراغ مدت زمان
     if category in ("standard", "dual", "custom_location"):
@@ -152,9 +154,10 @@ async def choose_duration(callback: CallbackQuery, state: FSMContext):
     # اینجا علاوه بر plan، category/location را هم در state ذخیره می‌کنیم تا «برگشت» از تایید، درست کار کند
     await state.update_data(
         plan=selected_plan,
-        category=selected_plan.get("category"),
+        category=normalize_category(selected_plan.get("category")),  # ← نرمال
         location=selected_plan.get("location"),
     )
+
     await state.set_state(BuyServiceStates.confirming)
 
     data = await state.get_data()
@@ -303,7 +306,7 @@ async def go_back(callback: CallbackQuery, state: FSMContext):
             await state.update_data(location=location)
 
         if category in ("standard", "dual", "custom_location"):
-            plans = [p for p in get_all_plans() if p.get("category") == category]
+            plans = [p for p in get_all_plans() if normalize_category(p.get("category")) == category]
             await state.set_state(BuyServiceStates.choosing_duration)
             text = (
                 "مدت زمان سرویس را انتخاب کنید:\n"
