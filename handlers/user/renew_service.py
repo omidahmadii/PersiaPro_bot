@@ -22,7 +22,7 @@ from keyboards.plan_picker import (
     location_label,
     fair_usage_label,
     format_price,
-    normalize_category
+    normalize_category,   # ← مهم: برای نرمال‌کردن دسته‌های خالی به "standard"
 )
 from services import IBSng
 from services.IBSng import change_group
@@ -70,6 +70,7 @@ def kb_services_inline(services: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
 
 
 def kb_categories(categories: List[str]) -> InlineKeyboardMarkup:
+    # categories باید از قبل normalize شده باشند
     rows = []
     for cat in categories:
         rows.append([InlineKeyboardButton(text=category_label(cat), callback_data=f"renew|category|{cat}")])
@@ -110,13 +111,12 @@ def kb_confirm() -> InlineKeyboardMarkup:
 
 
 # ---------- Initial chooser (like buy) ----------
-def make_initial_renew_keyboard(all_plans: List[Dict[str, Any]]) -> Tuple[
-    str, InlineKeyboardMarkup, Optional[str], List[Dict[str, Any]]]:
+def make_initial_renew_keyboard(all_plans: List[Dict[str, Any]]) -> Tuple[str, InlineKeyboardMarkup, Optional[str], List[Dict[str, Any]]]:
     """
     خروجی:
       kind: "categories" یا "plans"
       markup: کیبورد آماده
-      only_category: اگر فقط یک دسته فعال بود، نام آن (برای ذخیره در state)
+      only_category: اگر فقط یک دسته فعال بود، نام نرمال‌شدهٔ آن (برای ذخیره در state)
       plans_for_only_category: اگر kind == "plans" است، لیست پلن‌های همان دسته
 
     منطق:
@@ -126,11 +126,14 @@ def make_initial_renew_keyboard(all_plans: List[Dict[str, Any]]) -> Tuple[
       - اگر تنها دستهٔ فعال fixed_ip باشد → این تابع فقط نوع را برمی‌گرداند و در استارت، به مرحلهٔ لوکیشن هدایت می‌کنیم.
     """
     active_plans = [p for p in all_plans if _is_active(p)]
-    categories = sorted({p.get("category") for p in active_plans if p.get("category")})
+    # مجموعهٔ دسته‌ها بر اساس normalized (خالی/None ⇒ "standard")
+    categories_set = {normalize_category(p.get("category")) for p in active_plans}
+    categories = sorted(categories_set)
 
     if len(categories) <= 1:
         only_cat = categories[0] if categories else None
-        plans_for_cat = [p for p in active_plans if (only_cat is None or p.get("category") == only_cat)]
+        # فیلتر پلن‌های همان دسته با مقایسهٔ normalized
+        plans_for_cat = [p for p in active_plans if normalize_category(p.get("category")) == (only_cat or "standard")]
         # دکمهٔ بازگشت در این حالت نباشد
         return "plans", kb_plans(plans_for_cat, back_to="category", show_back=False), only_cat, plans_for_cat
 
@@ -181,8 +184,7 @@ async def renew_choose_service(callback: CallbackQuery, state: FSMContext):
         if not available_locations:
             return await callback.message.edit_text("❌ فعلاً لوکیشنی برای این دسته موجود نیست.")
         await state.set_state(RenewStates.choosing_location)
-        return await callback.message.edit_text("ابتدا لوکیشن را انتخاب کنید:",
-                                                reply_markup=kb_locations(available_locations))
+        return await callback.message.edit_text("ابتدا لوکیشن را انتخاب کنید:", reply_markup=kb_locations(available_locations))
 
     if kind == "categories":
         await state.set_state(RenewStates.choosing_category)
@@ -209,7 +211,10 @@ async def renew_choose_category(callback: CallbackQuery, state: FSMContext):
     await state.update_data(category=category)
 
     if category in ("standard", "dual", "custom_location"):
-        plans = [p for p in get_all_plans() if p.get("category") == category and _is_active(p)]
+        plans = [
+            p for p in get_all_plans()
+            if normalize_category(p.get("category")) == category and _is_active(p)
+        ]
         await state.set_state(RenewStates.choosing_plan)
         text = (
             "لطفاً پلن تمدید را انتخاب کنید:\n"
@@ -237,8 +242,10 @@ async def renew_choose_location(callback: CallbackQuery, state: FSMContext):
     _, _, location = callback.data.split("|")
     await state.update_data(location=location)
 
-    plans = [p for p in get_all_plans() if
-             p.get("location") == location and p.get("category") == "fixed_ip" and _is_active(p)]
+    plans = [
+        p for p in get_all_plans()
+        if p.get("location") == location and normalize_category(p.get("category")) == "fixed_ip" and _is_active(p)
+    ]
     if not plans:
         return await callback.message.edit_text(
             "❌ برای این لوکیشن فعلاً پلنی موجود نیست.",
@@ -262,10 +269,10 @@ async def renew_choose_plan(callback: CallbackQuery, state: FSMContext):
     if not selected_plan:
         return await callback.answer("پلن معتبر نیست.", show_alert=True)
 
-    # برای برگشت امن از تایید، category/location را هم ذخیره کنیم
+    # برای برگشت امن از تایید، category/location را هم ذخیره کنیم (با نرمالایز دسته)
     await state.update_data(
         selected_plan=selected_plan,
-        category=selected_plan.get("category"),
+        category=normalize_category(selected_plan.get("category")),
         location=selected_plan.get("location"),
     )
     await state.set_state(RenewStates.confirming)
@@ -433,14 +440,17 @@ async def renew_go_back(callback: CallbackQuery, state: FSMContext):
         location = data.get("location")
 
         if not category and plan:
-            category = plan.get("category")
+            category = normalize_category(plan.get("category"))  # ← نرمالایز
             await state.update_data(category=category)
         if not location and plan:
             location = plan.get("location")
             await state.update_data(location=location)
 
         if category in ("standard", "dual", "custom_location"):
-            plans = [p for p in get_all_plans() if p.get("category") == category and _is_active(p)]
+            plans = [
+                p for p in get_all_plans()
+                if normalize_category(p.get("category")) == category and _is_active(p)
+            ]
             await state.set_state(RenewStates.choosing_plan)
             text = (
                 "لطفاً پلن تمدید را انتخاب کنید:\n"
@@ -449,8 +459,10 @@ async def renew_go_back(callback: CallbackQuery, state: FSMContext):
             return await callback.message.edit_text(text, reply_markup=kb_plans(plans))
 
         elif category == "fixed_ip" and location:
-            plans = [p for p in get_all_plans() if
-                     p.get("location") == location and p.get("category") == "fixed_ip" and _is_active(p)]
+            plans = [
+                p for p in get_all_plans()
+                if p.get("location") == location and normalize_category(p.get("category")) == "fixed_ip" and _is_active(p)
+            ]
             await state.set_state(RenewStates.choosing_plan)
             text = (
                 "لطفاً پلن تمدید را انتخاب کنید:\n"
