@@ -48,7 +48,7 @@ async def activate_reserved_orders_loop():
             await asyncio.to_thread(activate_reserved_orders)
         except Exception as e:
             print(f"خطا در فعال کردن سفارش‌های رزرو شده: {e}")
-        # print("Activate reserved orders loop finished.")
+        print("Activate reserved orders loop finished.")
         await asyncio.sleep(60)
 
 
@@ -89,7 +89,6 @@ async def limit_speed_loop():
         await asyncio.sleep(60 * 60 * 24)  # هر 24 ساعت
 
 
-# تابع اصلی scheduler
 async def scheduler():
     await asyncio.gather(
         update_orders_time_from_ibs(),
