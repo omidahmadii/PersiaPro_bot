@@ -247,7 +247,6 @@ def unlock_user(username):
 def reset_first_login(username):
     session = login()
     user_id = get_user_id(username)
-    # edit_url = 'http://ibs.persiapro.com/IBSng/admin/plugins/edit.php'
     edit_url = IBS_URL_EDIT
 
     payload = {

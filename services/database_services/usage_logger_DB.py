@@ -12,8 +12,11 @@ def get_orders():
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("""
-                SELECT * FROM orders
-                WHERE starts_at IS NOT NULL AND expires_at IS NOT NULL
+                SELECT * FROM orders WHERE 
+                starts_at IS NOT NULL AND 
+                expires_at IS NOT NULL AND 
+                status IS NOT 'expired' AND 
+                status IS NOT 'renewed'
             """)
         return [dict(r) for r in cursor.fetchall()]
 

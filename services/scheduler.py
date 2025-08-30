@@ -92,11 +92,11 @@ async def limit_speed_loop():
 # تابع اصلی scheduler
 async def scheduler():
     await asyncio.gather(
-        # update_orders_time_from_ibs(),
+        update_orders_time_from_ibs(),
         # notifier_loop(),
-        # activate_reserved_orders_loop(),
-        # expire_orders_loop(),
-        # log_usage_loop(),
-        # check_membership_loop(),
-        # limit_speed_loop(),
+        activate_reserved_orders_loop(),
+        expire_orders_loop(),
+        log_usage_loop(),
+        check_membership_loop(),
+        limit_speed_loop(),
     )

@@ -26,16 +26,13 @@ def log_usage():
         expires_at = order["expires_at"]
 
         last_update = get_last_update(order_id)
-        if should_update(last_update, hours=4):
+        if should_update(last_update, hours=3):
             sent_mb, recv_mb = get_usage_from_ibs(username, starts_at, expires_at)
 
             total_mb = sent_mb + recv_mb
-            print(username, total_mb, sent_mb, recv_mb)
 
             now = datetime.now().isoformat()
             if last_update:
                 update_order_usages(now, sent_mb, recv_mb, total_mb, order_id)
             else:
                 insert_order_usages(order_id, username, plan_id, starts_at, expires_at, now, sent_mb, recv_mb, total_mb)
-
-
