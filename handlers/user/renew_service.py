@@ -1,7 +1,8 @@
 # handlers/user/renew_service.py
 
 import datetime
-from typing import Optional, Union, List, Dict, Any, Tuple
+import re
+from typing import Optional, List, Dict, Any, Tuple, Union
 
 import jdatetime
 from aiogram import Router, F
@@ -16,14 +17,6 @@ from aiogram.types import (
 
 from handlers.user.get_cards import show_cards
 from keyboards.user_main_menu import user_main_menu_keyboard
-# Formatterها و لیبل‌ها را از ماژول مشترک می‌گیریم
-from keyboards.plan_picker import (
-    category_label,
-    location_label,
-    fair_usage_label,
-    format_price,
-    normalize_category,   # ← مهم: برای نرمال‌کردن دسته‌های خالی به "standard"
-)
 from services import IBSng
 from services.IBSng import change_group
 from services.admin_notifier import send_message_to_admins
@@ -39,15 +32,216 @@ from services.db import (
 
 router = Router()
 
+# ---------------- plan_picker (merged & adapted for renew) ---------------- #
 
-# ---------------- Helpers ---------------- #
-def _is_active(plan: Dict[str, Any]) -> bool:
+def normalize_category(category: Optional[str]) -> str:
+    c = (category or "").strip().lower()
+    return c if c else "standard"
+
+
+def category_label(category: Optional[str]) -> str:
+    cat = normalize_category(category)
+    mapping = {
+        "standard": "✨ معمولی",
+        "dual": "👥 دوکاربره",
+        "fixed_ip": "📌 آی‌پی ثابت",
+        "custom_location": "📍 لوکیشن دلخواه",
+        "modem": "📶 مودم/روتر",
+    }
+    return mapping.get(cat, "❓ نامشخص")
+
+
+def location_label(location: Optional[str]) -> str:
+    mapping = {
+        "france": "🇫🇷 فرانسه",
+        "turkey": "🇹🇷 ترکیه",
+        "iran": "🇮🇷 ایران",
+        "england": "🇬🇧 انگلیس",
+        "global": "🌐 گلوبال",
+        None: "ندارد",
+        "": "ندارد",
+    }
+    return mapping.get(location, location or "ندارد")
+
+
+def fair_usage_label(plan: Dict) -> str:
+    try:
+        if int(plan.get("is_unlimited") or 0) == 1:
+            return "نامحدود (مصرف منصفانه)"
+    except Exception:
+        pass
+    vol = plan.get("volume_gb")
+    if vol:
+        return f"{vol} گیگ"
+    return "بدون آستانه مشخص"
+
+
+def format_price(amount: Union[int, float]) -> str:
+    try:
+        return f"{int(amount):,}"
+    except Exception:
+        return str(amount)
+
+
+def _is_active(plan: Dict) -> bool:
     val = plan.get("is_active", plan.get("active", 1))
     try:
         return int(val) == 1
     except Exception:
         return bool(val)
 
+
+CATEGORY_PRIORITY = [
+    "standard",
+    "dual",
+    "fixed_ip",
+    "custom_location",
+    "modem",
+]
+
+
+def _sort_categories(categories: List[str]) -> List[str]:
+    prio = {c: i for i, c in enumerate(CATEGORY_PRIORITY)}
+    return sorted(categories, key=lambda c: prio.get(c, 10_000))
+
+
+_PERSIAN_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")
+
+
+def _to_en_digits(s: str) -> str:
+    try:
+        return s.translate(_PERSIAN_DIGITS)
+    except Exception:
+        return s
+
+
+def _safe_int(x, default: int = 0) -> int:
+    try:
+        return int(x)
+    except Exception:
+        return default
+
+
+def _infer_days_from_group(group_name: Optional[str]) -> int:
+    if not group_name:
+        return 0
+    m = re.search(r"(\d+)\s*D\b", (group_name or "").upper())
+    if m:
+        return _safe_int(m.group(1), 0)
+    return 0
+
+
+def _infer_days_from_name(name: Optional[str]) -> int:
+    if not name:
+        return 0
+    s = _to_en_digits(str(name))
+    m = re.search(r"(\d+)\s*روز", s)
+    if m:
+        return _safe_int(m.group(1), 0)
+    m = re.search(r"(\d+)\s*ماه", s)
+    if m:
+        months = _safe_int(m.group(1), 0)
+        if months == 3:
+            return 90
+    return 0
+
+
+def _is_three_months(plan: Dict) -> bool:
+    try:
+        d_months = _safe_int(plan.get("duration_months") or 0, 0)
+        if d_months == 3:
+            return True
+        d_days = _safe_int(plan.get("duration_days") or 0, 0)
+        if d_days in (90, 91, 92, 93, 94, 95, 96, 97):
+            return True
+        if d_days == 0:
+            d_from_group = _infer_days_from_group(plan.get("group_name"))
+            if d_from_group in (90, 91, 92, 93, 94, 95, 96, 97):
+                return True
+            d_from_name = _infer_days_from_name(plan.get("name"))
+            if d_from_name in (90, 91, 92, 93, 94, 95, 96, 97):
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def _plan_badge(plan: Dict) -> str:
+    if _is_three_months(plan):
+        return "⭐️"
+    return ""
+
+
+def keyboard_categories(categories: List[str], prefix: str = "renew") -> InlineKeyboardMarkup:
+    ordered = _sort_categories(categories)
+    rows = []
+    for cat in ordered:
+        rows.append([
+            InlineKeyboardButton(
+                text=category_label(cat),
+                callback_data=f"{prefix}|category|{cat}"
+            )
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def keyboard_durations(
+        plans: List[Dict],
+        back_to: str = "category",
+        show_back: bool = True,
+        prefix: str = "renew"
+) -> InlineKeyboardMarkup:
+    rows = []
+    for plan in plans:
+        badge = _plan_badge(plan)
+        label = f"{badge}{plan.get('name', 'بدون نام')} • {format_price(plan.get('price', 0))} تومان{badge}"
+        rows.append([
+            InlineKeyboardButton(
+                text=label,
+                callback_data=f"{prefix}|plan|{plan['id']}"
+            )
+        ])
+    if show_back:
+        rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data=f"{prefix}|back|{back_to}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def keyboard_locations(locations: List[str], back_to: str = "category", prefix: str = "renew") -> InlineKeyboardMarkup:
+    rows = []
+    flags = {
+        "france": "🇫🇷 فرانسه",
+        "turkey": "🇹🇷 ترکیه",
+        "iran": "🇮🇷 ایران",
+        "england": "🇬🇧 انگلیس",
+    }
+    for loc in locations:
+        label = flags.get(loc, loc)
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"{prefix}|location|{loc}")])
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data=f"{prefix}|back|{back_to}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def keyboard_confirm(prefix: str = "renew") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ تایید", callback_data=f"{prefix}|confirm")],
+        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data=f"{prefix}|back|plan")]
+    ])
+
+
+def make_initial_renew_keyboard(all_plans: List[Dict]) -> Tuple[str, InlineKeyboardMarkup, Optional[str], List[Dict]]:
+    active_plans = [p for p in all_plans if _is_active(p)]
+    categories_set = {normalize_category(p.get("category")) for p in active_plans}
+    categories = _sort_categories(list(categories_set))
+
+    if len(categories) <= 1:
+        only_cat = categories[0] if categories else None
+        plans_for_cat = [p for p in active_plans if normalize_category(p.get("category")) == (only_cat or "standard")]
+        return "plans", keyboard_durations(plans_for_cat, back_to="category", show_back=False, prefix="renew"), only_cat, plans_for_cat
+
+    return "categories", keyboard_categories(categories, prefix="renew"), None, []
+
+
+# ---------------- Helpers ---------------- #
 
 async def edit_then_show_main_menu(message: Message, text: str, *, parse_mode: Optional[str] = None):
     await message.edit_text(text, parse_mode=parse_mode)
@@ -66,79 +260,8 @@ class RenewStates(StatesGroup):
 # ---------------- Keyboards (Renew namespace) ---------------- #
 def kb_services_inline(services: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(text=str(s["username"]), callback_data=f"renew|service|{s['id']}")] for s in services]
+    # اگر می‌خواهی، می‌توانیم یک دکمه برگشت هم اضافه کنیم؛ الان نمایشی ساده است.
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def kb_categories(categories: List[str]) -> InlineKeyboardMarkup:
-    # categories باید از قبل normalize شده باشند
-    rows = []
-    for cat in categories:
-        rows.append([InlineKeyboardButton(text=category_label(cat), callback_data=f"renew|category|{cat}")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def kb_locations(locations: List[str], back_to: str = "category") -> InlineKeyboardMarkup:
-    flags = {
-        "france": "🇫🇷 فرانسه",
-        "turkey": "🇹🇷 ترکیه",
-        "iran": "🇮🇷 ایران",
-        "england": "🇬🇧 انگلیس",
-    }
-    rows: List[List[InlineKeyboardButton]] = []
-    for loc in locations:
-        label = flags.get(loc, loc)
-        rows.append([InlineKeyboardButton(text=label, callback_data=f"renew|location|{loc}")])
-    rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data=f"renew|back|{back_to}")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def kb_plans(plans: List[Dict[str, Any]], back_to: str = "category", show_back: bool = True) -> InlineKeyboardMarkup:
-    rows = []
-    for p in plans:
-        # فقط نام + قیمت (بدون حجم/FUP)
-        label = f"{p['name']} • {format_price(p['price'])} تومان"
-        rows.append([InlineKeyboardButton(text=label, callback_data=f"renew|plan|{p['id']}")])
-    if show_back:
-        rows.append([InlineKeyboardButton(text="⬅️ بازگشت", callback_data=f"renew|back|{back_to}")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def kb_confirm() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ تایید و تمدید", callback_data="renew|confirm")],
-        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="renew|back|plan")],
-    ])
-
-
-# ---------- Initial chooser (like buy) ----------
-def make_initial_renew_keyboard(all_plans: List[Dict[str, Any]]) -> Tuple[str, InlineKeyboardMarkup, Optional[str], List[Dict[str, Any]]]:
-    """
-    خروجی:
-      kind: "categories" یا "plans"
-      markup: کیبورد آماده
-      only_category: اگر فقط یک دسته فعال بود، نام نرمال‌شدهٔ آن (برای ذخیره در state)
-      plans_for_only_category: اگر kind == "plans" است، لیست پلن‌های همان دسته
-
-    منطق:
-      - فقط پلن‌های فعال را در نظر می‌گیرد
-      - اگر >1 دسته فعال → کیبورد دسته‌بندی‌ها
-      - اگر فقط 1 دسته فعال → کیبورد پلن‌های همان دسته (بدون دکمهٔ بازگشت)
-      - اگر تنها دستهٔ فعال fixed_ip باشد → این تابع فقط نوع را برمی‌گرداند و در استارت، به مرحلهٔ لوکیشن هدایت می‌کنیم.
-    """
-    active_plans = [p for p in all_plans if _is_active(p)]
-    # مجموعهٔ دسته‌ها بر اساس normalized (خالی/None ⇒ "standard")
-    categories_set = {normalize_category(p.get("category")) for p in active_plans}
-    categories = sorted(categories_set)
-
-    if len(categories) <= 1:
-        only_cat = categories[0] if categories else None
-        # فیلتر پلن‌های همان دسته با مقایسهٔ normalized
-        plans_for_cat = [p for p in active_plans if normalize_category(p.get("category")) == (only_cat or "standard")]
-        # دکمهٔ بازگشت در این حالت نباشد
-        return "plans", kb_plans(plans_for_cat, back_to="category", show_back=False), only_cat, plans_for_cat
-
-    # بیش از یک دسته
-    return "categories", kb_categories(categories), None, []
 
 
 # ---------------- Step 0: Entry ---------------- #
@@ -170,21 +293,18 @@ async def renew_choose_service(callback: CallbackQuery, state: FSMContext):
     if not selected_service:
         return await callback.answer("سرویس معتبر نیست.", show_alert=True)
 
-    # ذخیره سرویس انتخاب‌شده
     await state.update_data(selected_service=selected_service)
 
-    # نمایش دسته‌ها یا لیست پلن‌ها (مانند خرید)
     all_plans = get_all_plans()
     kind, markup, only_category, plans_for_only_category = make_initial_renew_keyboard(all_plans)
 
-    # اگر تنها دسته fixed_ip باشد، به انتخاب لوکیشن برو
     if kind == "plans" and only_category == "fixed_ip":
         await state.update_data(category="fixed_ip")
         available_locations = get_active_locations_by_category("fixed_ip")
         if not available_locations:
             return await callback.message.edit_text("❌ فعلاً لوکیشنی برای این دسته موجود نیست.")
         await state.set_state(RenewStates.choosing_location)
-        return await callback.message.edit_text("ابتدا لوکیشن را انتخاب کنید:", reply_markup=kb_locations(available_locations))
+        return await callback.message.edit_text("ابتدا لوکیشن را انتخاب کنید:", reply_markup=keyboard_locations(available_locations, prefix="renew"))
 
     if kind == "categories":
         await state.set_state(RenewStates.choosing_category)
@@ -193,9 +313,9 @@ async def renew_choose_service(callback: CallbackQuery, state: FSMContext):
             reply_markup=markup
         )
 
-    # فقط یک دستهٔ فعال → مستقیم لیست پلن‌ها
     if only_category:
         await state.update_data(category=only_category)
+
     await state.set_state(RenewStates.choosing_plan)
     text = (
         "لطفاً پلن تمدید را انتخاب کنید:\n"
@@ -208,9 +328,10 @@ async def renew_choose_service(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("renew|category"))
 async def renew_choose_category(callback: CallbackQuery, state: FSMContext):
     _, _, category = callback.data.split("|")
+    category = normalize_category(category)
     await state.update_data(category=category)
 
-    if category in ("standard", "dual", "custom_location"):
+    if category in ("standard", "dual", "custom_location", "modem"):
         plans = [
             p for p in get_all_plans()
             if normalize_category(p.get("category")) == category and _is_active(p)
@@ -220,7 +341,7 @@ async def renew_choose_category(callback: CallbackQuery, state: FSMContext):
             "لطفاً پلن تمدید را انتخاب کنید:\n"
             "ℹ️ این سرویس‌ها دارای «آستانه مصرف منصفانه» هستند؛ با عبور از آستانه، سرویس قطع نمی‌شود."
         )
-        return await callback.message.edit_text(text, reply_markup=kb_plans(plans))
+        return await callback.message.edit_text(text, reply_markup=keyboard_durations(plans, prefix="renew"))
 
     elif category == "fixed_ip":
         available_locations = get_active_locations_by_category(category)
@@ -229,7 +350,7 @@ async def renew_choose_category(callback: CallbackQuery, state: FSMContext):
         await state.set_state(RenewStates.choosing_location)
         return await callback.message.edit_text(
             "ابتدا لوکیشن را انتخاب کنید:",
-            reply_markup=kb_locations(available_locations)
+            reply_markup=keyboard_locations(available_locations, prefix="renew")
         )
 
     else:
@@ -249,7 +370,7 @@ async def renew_choose_location(callback: CallbackQuery, state: FSMContext):
     if not plans:
         return await callback.message.edit_text(
             "❌ برای این لوکیشن فعلاً پلنی موجود نیست.",
-            reply_markup=kb_locations([location], back_to="category")
+            reply_markup=keyboard_locations([location], back_to="category", prefix="renew")
         )
 
     await state.set_state(RenewStates.choosing_plan)
@@ -257,7 +378,7 @@ async def renew_choose_location(callback: CallbackQuery, state: FSMContext):
         "لطفاً پلن تمدید را انتخاب کنید:\n"
         "ℹ️ این سرویس‌ها دارای «آستانه مصرف منصفانه» هستند؛ با عبور از آستانه، سرویس قطع نمی‌شود."
     )
-    return await callback.message.edit_text(text, reply_markup=kb_plans(plans, back_to="location"))
+    return await callback.message.edit_text(text, reply_markup=keyboard_durations(plans, back_to="location", prefix="renew"))
 
 
 # ---------------- Step 4: Choose Plan ---------------- #
@@ -269,7 +390,6 @@ async def renew_choose_plan(callback: CallbackQuery, state: FSMContext):
     if not selected_plan:
         return await callback.answer("پلن معتبر نیست.", show_alert=True)
 
-    # برای برگشت امن از تایید، category/location را هم ذخیره کنیم (با نرمالایز دسته)
     await state.update_data(
         selected_plan=selected_plan,
         category=normalize_category(selected_plan.get("category")),
@@ -278,24 +398,28 @@ async def renew_choose_plan(callback: CallbackQuery, state: FSMContext):
     await state.set_state(RenewStates.confirming)
 
     data = await state.get_data()
+    selected_service = data.get("selected_service") or {}
+    service_username = str(selected_service.get("username", ""))
+
     cat_text = category_label(data.get("category"))
     loc_text = location_label(selected_plan.get("location"))
-    fup_text = fair_usage_label(selected_plan)  # نمایش FUP فقط در تایید
+    fup_text = fair_usage_label(selected_plan)
     price_text = format_price(selected_plan["price"])
 
     summary = [
         "🧾 پیش‌نمایش تمدید:",
         f"🔸 دسته: {cat_text}",
         f"🔹 لوکیشن: {loc_text}",
+        f"👤 نام کاربری فعلی: `{service_username}`",
         f"📦 {fup_text}",
         f"📅 مدت زمان: {selected_plan['name']}",
         f"💰 مبلغ: {price_text} تومان",
         "",
-        "ℹ️ توجه: «آستانه مصرف منصفانه» به معنی قطع سرویس بعد از اتمام نیست.",
+        "ℹ️ این تمدید روی همین نام‌کاربری اعمال می‌شود و یوزرنیم/رمز جدید ساخته نمی‌شود.",
         "",
         "لطفاً تایید کنید:",
     ]
-    return await callback.message.edit_text("\n".join(summary), reply_markup=kb_confirm())
+    return await callback.message.edit_text("\n".join(summary), reply_markup=keyboard_confirm(prefix="renew"), parse_mode="Markdown")
 
 
 # ---------------- Step 5: Confirm & Process ---------------- #
@@ -395,7 +519,6 @@ async def renew_go_back(callback: CallbackQuery, state: FSMContext):
         )
 
     if target == "category":
-        # منطق ورودی مشترک: اگر فقط یک دسته فعال باشد، مستقیم پلن‌ها را نشان بده
         all_plans = get_all_plans()
         kind, markup, only_category, _ = make_initial_renew_keyboard(all_plans)
         if kind == "categories":
@@ -412,7 +535,7 @@ async def renew_go_back(callback: CallbackQuery, state: FSMContext):
                     return await callback.message.edit_text("❌ فعلاً لوکیشنی برای این دسته موجود نیست.")
                 await state.set_state(RenewStates.choosing_location)
                 return await callback.message.edit_text(
-                    "ابتدا لوکیشن را انتخاب کنید:", reply_markup=kb_locations(available_locations)
+                    "ابتدا لوکیشن را انتخاب کنید:", reply_markup=keyboard_locations(available_locations, prefix="renew")
                 )
             if only_category:
                 await state.update_data(category=only_category)
@@ -430,23 +553,22 @@ async def renew_go_back(callback: CallbackQuery, state: FSMContext):
         if not available_locations:
             return await callback.message.edit_text("❌ فعلاً لوکیشنی برای این دسته موجود نیست.")
         return await callback.message.edit_text(
-            "ابتدا لوکیشن را انتخاب کنید:", reply_markup=kb_locations(available_locations)
+            "ابتدا لوکیشن را انتخاب کنید:", reply_markup=keyboard_locations(available_locations, prefix="renew")
         )
 
     if target == "plan":
-        # تضمین category/location از روی plan
         plan = data.get("selected_plan")
         category = data.get("category")
         location = data.get("location")
 
         if not category and plan:
-            category = normalize_category(plan.get("category"))  # ← نرمالایز
+            category = normalize_category(plan.get("category"))
             await state.update_data(category=category)
         if not location and plan:
             location = plan.get("location")
             await state.update_data(location=location)
 
-        if category in ("standard", "dual", "custom_location"):
+        if category in ("standard", "dual", "custom_location", "modem"):
             plans = [
                 p for p in get_all_plans()
                 if normalize_category(p.get("category")) == category and _is_active(p)
@@ -456,7 +578,7 @@ async def renew_go_back(callback: CallbackQuery, state: FSMContext):
                 "لطفاً پلن تمدید را انتخاب کنید:\n"
                 "ℹ️ این سرویس‌ها دارای «آستانه مصرف منصفانه» هستند؛ با عبور از آستانه، سرویس قطع نمی‌شود."
             )
-            return await callback.message.edit_text(text, reply_markup=kb_plans(plans))
+            return await callback.message.edit_text(text, reply_markup=keyboard_durations(plans, prefix="renew"))
 
         elif category == "fixed_ip" and location:
             plans = [
@@ -468,9 +590,9 @@ async def renew_go_back(callback: CallbackQuery, state: FSMContext):
                 "لطفاً پلن تمدید را انتخاب کنید:\n"
                 "ℹ️ این سرویس‌ها دارای «آستانه مصرف منصفانه» هستند؛ با عبور از آستانه، سرویس قطع نمی‌شود."
             )
-            return await callback.message.edit_text(text, reply_markup=kb_plans(plans, back_to="location"))
+            return await callback.message.edit_text(text, reply_markup=keyboard_durations(plans, back_to="location", prefix="renew"))
 
-        # اگر هنوز چیزی پیدا نشد، برگرد به انتخاب دسته/ورودی
+        # fallback به ورودی
         all_plans = get_all_plans()
         kind, markup, only_category, _ = make_initial_renew_keyboard(all_plans)
         if kind == "categories":
@@ -487,7 +609,7 @@ async def renew_go_back(callback: CallbackQuery, state: FSMContext):
                     return await callback.message.edit_text("❌ فعلاً لوکیشنی برای این دسته موجود نیست.")
                 await state.set_state(RenewStates.choosing_location)
                 return await callback.message.edit_text(
-                    "ابتدا لوکیشن را انتخاب کنید:", reply_markup=kb_locations(available_locations)
+                    "ابتدا لوکیشن را انتخاب کنید:", reply_markup=keyboard_locations(available_locations, prefix="renew")
                 )
             if only_category:
                 await state.update_data(category=only_category)
@@ -497,5 +619,4 @@ async def renew_go_back(callback: CallbackQuery, state: FSMContext):
                 "ℹ️ این سرویس‌ها دارای «آستانه مصرف منصفانه» هستند؛ با عبور از آستانه، سرویس قطع نمی‌شود."
             )
             return await callback.message.edit_text(text, reply_markup=markup)
-
     return

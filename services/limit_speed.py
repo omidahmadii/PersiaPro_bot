@@ -34,6 +34,7 @@ def get_rate_limit(speed):
 
 async def limit_speed():
     rows = get_orders_usage_for_limitation()
+    print(len(rows))
     for row in rows:
         usage_id, order_id, username, total_mb, applied_speed, is_unlimited, duration_months = row
 

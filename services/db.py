@@ -201,6 +201,7 @@ def get_all_plans():
                 category,
                 location
             FROM plans
+            where visible is 1
             ORDER BY order_priority DESC
         """)
         return [dict(row) for row in cursor.fetchall()]
@@ -240,14 +241,14 @@ def get_next_account_number():
         return max_account + 1
 
 
-def insert_order(user_id, plan_id, username, price, status):
+def insert_order(user_id, plan_id, username, price, status, volume_gb):
     created_at = datetime.now().isoformat()
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute('''
-                       INSERT INTO orders (user_id, plan_id, username, price, created_at, status)
-                       VALUES (?, ?, ?, ?, ?, ?)
-                       ''', (user_id, plan_id, username, price, created_at, status))
+                       INSERT INTO orders (user_id, plan_id, username, price, created_at, status, volume_gb)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)
+                       ''', (user_id, plan_id, username, price, created_at, status, volume_gb))
         order_id = cursor.lastrowid  # گرفتن آیدی آخرین ردیف واردشده
         conn.commit()
         return order_id
@@ -662,8 +663,10 @@ def get_orders_usage_for_limitation():
             FROM order_usages ou
             JOIN orders o ON ou.order_id = o.id
             JOIN plans p ON o.plan_id = p.id
+            WHERE o.status IN ('active', 'waiting_for_renewal')
         """)
         return cursor.fetchall()
+
 
 
 def save_applied_speed_to_db(applied_speed: str, order_id: int):

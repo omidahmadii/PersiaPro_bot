@@ -57,10 +57,9 @@ def _maybe_activate_reserved_order(reserved_order: dict) -> None:
     # Sync IBSng group according to plan duration
     duration_months = get_order_plan_duration(order_id=reserved_order["id"]).get("duration_months", 1)
     # group_name = f"{duration_months}-Month"
-    group_name = get_order_plan_group_name(order_id=reserved_order["id"])
+    group_name = get_order_plan_group_name(order_id=reserved_order["id"])["group_name"]
     IBSng.reset_account_client(username=reserved_order["username"])
     change_group(reserved_order["username"], group_name)
-
     # Notify the user via Telegram
     _notify_user_activation(reserved_order, duration_months)
 
@@ -81,19 +80,23 @@ def _is_previous_order_expired(order: dict) -> bool:
 
 
 def _notify_user_activation(reserved_order: dict, duration_months: int) -> None:
-    msg = (
-        "✅ دوست عزیز، دورهٔ قبلی سرویس شما به پایان رسید و تمدید {duration} ماهه به‌طور خودکار فعال شد.\n"
-        "نام کاربری: <code>{username}</code>\n"
-        "لطفاً در صورت مشکل با پشتیبانی در تماس باشید."
-    ).format(duration=duration_months, username=reserved_order["username"])
+    plan_name = reserved_order.get("plan_name", "سرویس شما")
+    username = reserved_order["username"]
+    volume_gb = reserved_order.get("volume_gb")   # حجم سرویس
 
-    """ارسال پیام به کاربر در تلگرام"""
+    msg = (
+        f"✅ دوست عزیز،\n"
+        f"سرویس رزرو شما با نام کاربری <code>{username}</code>  با موفقیت فعال شد.\n\n"
+        f"✨ در صورت بروز هرگونه مشکل با پشتیبانی در تماس باشید."
+    )
+
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {
         "chat_id": reserved_order["user_id"],
         "text": msg,
         "parse_mode": "HTML"
     }
+
     response = requests.post(url, data=data)
     if not response.ok:
         raise Exception(f"Telegram API error: {response.text}")

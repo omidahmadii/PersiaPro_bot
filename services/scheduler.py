@@ -94,8 +94,8 @@ async def scheduler():
         update_orders_time_from_ibs(),
         # notifier_loop(),
         activate_reserved_orders_loop(),
-        expire_orders_loop(),
-        log_usage_loop(),
-        check_membership_loop(),
-        limit_speed_loop(),
+        # expire_orders_loop(),
+        #log_usage_loop(),
+        #check_membership_loop(),
+        #limit_speed_loop(),
     )
