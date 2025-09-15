@@ -26,9 +26,6 @@ def calculate_photo_hash(file_path: str) -> str:
 
 @router.message(F.photo)
 async def catch_any_photo_as_receipt(message: Message, state: FSMContext, bot: Bot):
-    # اگر کاربر داخل استیت خاصی است (مثل PaymentStates.waiting_for_receipt) نذار این هندلر دخالت کنه
-    if await state.get_state():
-        return
     user_id = message.from_user.id
     first_name = message.from_user.first_name
     username = message.from_user.username

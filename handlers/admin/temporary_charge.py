@@ -38,7 +38,7 @@ async def start_temp_charge(msg: Message, state: FSMContext):
         ]
     )
     await state.set_state(TempCharge.waiting_for_username)
-    await msg.answer(
+    return await msg.answer(
         "👤 یوزرنیم کاربر را بفرست (مثل: omid یا @omid)\n"
         "یا روی «انصراف» بزن.",
         reply_markup=kb
@@ -62,7 +62,8 @@ async def temp_cancel_msg(msg: Message, state: FSMContext):
 async def receive_username_and_charge(msg: Message, state: FSMContext, bot: Bot):
     username = _normalize_username(msg.text or "")
     if not username:
-        return await msg.answer("❌ یوزرنیم معتبر نیست. دوباره بفرست (مثل: omid).")
+        await msg.answer("❌ یوزرنیم معتبر نیست.")
+        return await state.clear()
 
     await msg.answer(f"⏳ در حال اعمال شارژ موقت برای «{username}»…")
 
@@ -71,15 +72,14 @@ async def receive_username_and_charge(msg: Message, state: FSMContext, bot: Bot)
         temporary_charge(username)
     except Exception as e:
         await state.clear()
-        await msg.answer(
+        return await msg.answer(
             f"❌ خطا در شارژ موقت برای «{username}»\n"
             f"{type(e).__name__}: {e}",
             reply_markup=admin_main_menu_keyboard()
         )
-        return
 
     await state.clear()
-    await msg.answer(
+    return await msg.answer(
         f"✅ شارژ موقت انجام شد.\n"
         f"کاربر «{username}» به گروه 1-Hour منتقل شد و زمان/اتریبیوت‌ها ریست و اکانت آزاد شد.",
         reply_markup=admin_main_menu_keyboard()

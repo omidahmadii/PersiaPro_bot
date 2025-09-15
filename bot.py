@@ -4,7 +4,8 @@ import sys
 
 from aiogram import Dispatcher
 
-from handlers.admin import verify_transactions, temporary_charge
+from handlers.admin import verify_transactions, temporary_charge, cards_managment, user_managment, plan_managment, \
+    reports
 from handlers.shared import change_password
 from handlers.user import placeholder, feedback, get_cards
 from handlers.user import start, buy_service, my_services, account, tutorial, contact_support, payment, renew_service, \
@@ -35,11 +36,16 @@ async def main():
         tutorial.router,
         my_services.router,
         renew_service.router,
-        change_password.router,
         feedback.router,
         get_cards.router,
         temporary_charge.router,
+        cards_managment.router,
+        user_managment.router,
+        plan_managment.router,
+        reports.router,
 
+
+        change_password.router,
         FAQ.router,
         placeholder.router,
     )

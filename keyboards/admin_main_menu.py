@@ -5,7 +5,9 @@ def admin_main_menu_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="💳 تایید پرداخت ها"), KeyboardButton(text="⚡️ شارژ موقت")],
-            [KeyboardButton(text="تغییر رمز عبور")],
+            [KeyboardButton(text="👥 مدیریت کاربران"), KeyboardButton(text="💳 مدیریت کارت‌ها")],
+            [KeyboardButton(text="تغییر رمز عبور"), KeyboardButton(text="📦 مدیریت پلن‌ها")],
+            [KeyboardButton(text="📑 گزارشات"), KeyboardButton(text="📑 گزارشات")],
             [KeyboardButton(text="📦 سرویس‌های من"), KeyboardButton(text="💳 دریافت شماره کارت")],
             [KeyboardButton(text="📄 تمدید سرویس"), KeyboardButton(text="🛒 خرید سرویس")],
             [KeyboardButton(text="🎫 پشتیبانی"), KeyboardButton(text="📚 آموزش")],

@@ -34,14 +34,13 @@ async def change_password(message: Message, state: FSMContext):
 @router.message(ChangePasswordState.waiting_for_username)
 async def receive_username(message: Message, state: FSMContext):
     username = message.text.strip()
-    print(username)
     accounts_id = get_accounts_id_by_username(username)
     if not accounts_id:
         user_id = message.from_user.id
         role = "admin" if user_id in ADMINS else "user"
         main_menu_keyboard = admin_main_menu_keyboard() if role == "admin" else user_main_menu_keyboard()
         await message.answer("❌ کاربری با این نام پیدا نشد. لطفاً دوباره تلاش کنید.", reply_markup=main_menu_keyboard)
-        return
+        return await state.clear()
 
     # ذخیره username در state
     await state.update_data(username=username)
