@@ -16,7 +16,6 @@ def login():
         'username': IBS_USERNAME,
         'password': IBS_PASSWORD
     }
-
     # Perform the login request
     response = session.post(IBS_URL_BASE, data=payload)
     # Check if the login was successful
@@ -24,14 +23,10 @@ def login():
         return session
     else:
         print("Login failed!")
-        # print("Status code:", response.status_code)
-        # print("Response:", response.text)
-        # exit()
 
 
 def get_user_id(username):
     session = login()
-    # user_info_url = 'http://ibs.persiapro.com/IBSng/admin/user/user_info.php'
     user_info_url = IBS_URL_INFO
     payload = {
         'normal_username_multi': username
@@ -551,6 +546,44 @@ def get_user_radius_attribute(username):
     return None  # اگر چیزی پیدا نشد
 
 
+def get_group_radius_attribute(username):
+    session = login()
+    user_id = get_user_id(username)
+    user_info_url = IBS_URL_INFO
+    payload = {
+        'user_id_multi': user_id
+    }
+    response = session.post(user_info_url, data=payload)
+    group_name = ""
+    if response.ok:
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        link = soup.find("a", href=re.compile(r"group_info\.php\?group_name="))
+        if link:
+            group_name = link.text.strip()
+
+    edit_url = IBS_URL_EDIT
+    payload = {
+        'group_name': group_name,
+        'edit_group': '1',
+        'attr_edit_checkbox_18': 'radius_attrs',
+    }
+
+    response = session.post(edit_url, data=payload)
+    if response.ok:
+        soup = BeautifulSoup(response.text, 'html.parser')
+        # پیدا کردن تگ td که مقدار Radius Attributes را دارد
+        tds = soup.find_all("td", class_="Form_Content_Row_Right_textarea_td_dark")
+        for td in tds:
+            if "Group=" in td.text or "Rate-Limit=" in td.text or "Mikrotik-Rate-Limit=" in td.text:
+                content = td.get_text(strip=True, separator="\n")
+                # استخراج کلید-مقدارها با regex
+                attributes = dict(re.findall(r'([A-Za-z\-]+)="([^"]+)"', content))
+                return attributes  # خروج از تابع بعد از پیدا کردن اولین td معتبر
+
+    return None  # اگر چیزی پیدا نشد
+
+
 def temporary_charge(username):
     session = login()
     user_id = get_user_id(username)
@@ -599,3 +632,64 @@ def temporary_charge(username):
     session.post(IBS_URL_EDIT, data=payload)
 
 
+def get_usage_from_ibs(username, starts_at, expires_at):
+    session = login()
+    user_id = get_user_id(username)
+    payload = {
+        'show_reports': 1,
+        'page': 1,
+        'admin_connection_logs': 1,
+        'user_ids': user_id,
+        'owner': 'All',
+        'login_time_from': starts_at,
+        'login_time_from_unit': 'jalali',
+        'login_time_to': expires_at,
+        'login_time_to_unit': 'jalali',
+        'show_total_duration': 'on',
+        'show_total_inouts': 'on',
+        'successful_yes': 'on',
+        'order_by': 'login_time',
+        'rpp': 20
+    }
+    response = session.post(IBS_URL_CONNECTIONS, data=payload)
+    if response.ok:
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        # Find all <td> elements
+        td_elements = soup.find_all('td', class_='list_col')
+
+        # Initialize variables for the values
+        receive = None
+        send = None
+
+        # Iterate through <td> elements to find the desired values
+        for td in td_elements:
+
+            # Check for "Report Total In Bytes" label
+            if "Report" in td.text and "Total In Bytes:" in td.text:
+                receive = td.find_next_sibling('td').text.strip()
+
+            # Check for "Report Total Out Bytes" label
+            elif "Report" in td.text and "Total Out Bytes:" in td.text:
+                send = td.find_next_sibling('td').text.strip()
+
+        def convert_to_mb(data_str):
+            # Get the numeric part of the string
+            num = float(data_str[:-1])
+            unit = data_str[-1].upper()
+            if unit == 'B':
+                return 0
+            if unit == 'K':
+                return int(num / 1024)  # Convert KB to MB and then to an integer
+            elif unit == 'M':
+                return int(num)  # Already in MB, just convert to an integer
+            elif unit == 'G':
+                return int(num * 1024)  # Convert GB to MB and then to an integer
+            else:
+                raise ValueError(f"Unknown unit: {unit}")
+
+        send_mb = convert_to_mb(send)
+        receive_mb = convert_to_mb(receive)
+
+        return send_mb, receive_mb
+    return None

@@ -28,6 +28,7 @@ from services.db import (
     insert_renewed_order,
     update_order_status,
     get_active_locations_by_category,
+    get_order_status
 )
 
 router = Router()
@@ -437,6 +438,7 @@ async def renew_confirm_and_process(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     current_balance = get_user_balance(user_id)
     plan_price = selected_plan["price"]
+
     if current_balance < plan_price:
         await state.clear()
         await callback.message.edit_text(
@@ -451,10 +453,25 @@ async def renew_confirm_and_process(callback: CallbackQuery, state: FSMContext):
     plan_group_name = selected_plan["group_name"]
     service_id = selected_service["id"]
     service_username = str(selected_service["username"])
-
+    volume_gb = selected_plan.get("volume_gb") or 0
     # تشخیص انقضا
     expires_at_greg = jdatetime.datetime.strptime(selected_service["expires_at"], "%Y-%m-%d %H:%M").togregorian()
     is_expired = selected_service["status"] == "expired" or expires_at_greg < datetime.datetime.now()
+
+    latest_status = get_order_status(service_id)
+    if latest_status is None:
+        await state.clear()
+        return await edit_then_show_main_menu(callback.message, "❌ سفارش پیدا نشد. لطفاً دوباره تلاش کنید.")
+        # اگر قبلاً رزرو یا تمدید شده، دیگر اجازه تمدید مجدد نده
+
+    BLOCK_STATUSES = {"waiting_for_renewal", "reserved", "renewed"}
+    if latest_status in BLOCK_STATUSES:
+        await state.clear()
+        await callback.message.edit_text(
+            "⚠️ این سرویس قبلاً برای تمدید ثبت شده یا هم‌اکنون تمدید شده است. "
+            "اگر فکر می‌کنید اشتباه شده با پشتیبانی تماس بگیرید."
+        )
+        return await callback.message.answer("بازگشت به منوی اصلی", reply_markup=user_main_menu_keyboard())
 
     # کسر موجودی
     new_balance = current_balance - plan_price
@@ -463,7 +480,7 @@ async def renew_confirm_and_process(callback: CallbackQuery, state: FSMContext):
     if is_expired:
         # تمدید فوری
         update_order_status(order_id=service_id, new_status="renewed")
-        insert_renewed_order(user_id, plan_id, service_username, plan_price, "active", service_id)
+        insert_renewed_order(user_id, plan_id, service_username, plan_price, "active", service_id, volume_gb)
 
         IBSng.reset_account_client(username=service_username)
         change_group(username=service_username, group=plan_group_name)
@@ -488,7 +505,7 @@ async def renew_confirm_and_process(callback: CallbackQuery, state: FSMContext):
 
     # اگر هنوز فعال است → رزرو تمدید در انتهای دوره
     update_order_status(order_id=service_id, new_status="waiting_for_renewal")
-    insert_renewed_order(user_id, plan_id, service_username, plan_price, "reserved", service_id)
+    insert_renewed_order(user_id, plan_id, service_username, plan_price, "reserved", service_id, volume_gb)
 
     text_admin = (
         "🔔 تمدید رزروی ثبت شد\n"

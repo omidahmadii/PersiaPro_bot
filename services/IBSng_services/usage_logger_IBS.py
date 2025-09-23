@@ -64,10 +64,11 @@ def get_user_id(username):
     return None
 
 
-
 def get_usage_from_ibs(username, starts_at, expires_at):
+    print(username)
     session = login()
     user_id = get_user_id(username)
+    print(user_id)
     user_info_url = 'http://ibs.persiapro.com/IBSng/admin/report/connections.php'
     payload = {
         'show_reports': 1,

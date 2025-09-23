@@ -254,14 +254,14 @@ def insert_order(user_id, plan_id, username, price, status, volume_gb):
         return order_id
 
 
-def insert_renewed_order(user_id, plan_id, username, price, status, is_renewal_of_order):
+def insert_renewed_order(user_id, plan_id, username, price, status, is_renewal_of_order, volume_gb):
     created_at = datetime.now().isoformat()
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute('''
-                       INSERT INTO orders (user_id, plan_id, username, price, created_at, status, is_renewal_of_order)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)
-                       ''', (user_id, plan_id, username, price, created_at, status, is_renewal_of_order))
+                       INSERT INTO orders (user_id, plan_id, username, price, created_at, status, is_renewal_of_order, volume_gb)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                       ''', (user_id, plan_id, username, price, created_at, status, is_renewal_of_order, volume_gb))
         order_id = cursor.lastrowid  # گرفتن آیدی آخرین ردیف واردشده
         conn.commit()
         return order_id
@@ -668,7 +668,6 @@ def get_orders_usage_for_limitation():
         return cursor.fetchall()
 
 
-
 def save_applied_speed_to_db(applied_speed: str, order_id: int):
     with sqlite3.connect(DB_PATH) as conn:
         curses = conn.cursor()
@@ -710,3 +709,46 @@ def get_active_locations_by_category(category: str):
             WHERE category = ? AND visible = 1 AND location IS NOT NULL
         """, (category,))
         return [row["location"] for row in cursor.fetchall()]
+
+
+def get_services_waiting_for_renew(user_id):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, username, expires_at, status
+            FROM orders
+            WHERE user_id = ? AND status = 'waiting_for_renewal'
+        """, (user_id,))
+        return [dict(r) for r in cur.fetchall()]
+
+
+def get_services_waiting_for_renew_admin():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, username, expires_at, status
+            FROM orders
+            WHERE status = 'waiting_for_renewal'
+        """, )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def set_order_expiry_to_now(expiry_str: str, service_id: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE orders
+            SET expires_at = ?
+            WHERE id = ?
+        """, (expiry_str, service_id))
+
+
+def get_order_status(order_id: int) -> Optional[str]:
+    """برگرداندن وضعیت فعلی سفارش (status) از جدول orders"""
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT status FROM orders WHERE id = ?", (order_id,))
+        row = cur.fetchone()
+        return row[0] if row else None
