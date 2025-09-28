@@ -54,7 +54,11 @@ async def report_handler(callback: CallbackQuery, state: FSMContext):
     # تاریخ شروع ماه جاری (میلادی)
     now_jalali = jdatetime.datetime.now()
     month_start_jalali = jdatetime.datetime(now_jalali.year, now_jalali.month, 1)
+    next_month_start_jalali = jdatetime.datetime(now_jalali.year, now_jalali.month + 1, 1)
     month_start_greg = month_start_jalali.togregorian().strftime("%Y-%m-%d")
+    print("month_start_jalali:" , month_start_jalali)
+    print("month_start_greg:" , month_start_greg)
+    print("next_month_start_jalali:", next_month_start_jalali)
 
     if action == "orders_month":
         cursor.execute("SELECT COUNT(*) FROM orders WHERE created_at >= ?", (month_start_greg,))
@@ -67,12 +71,15 @@ async def report_handler(callback: CallbackQuery, state: FSMContext):
         await callback.message.answer(f"💰 مجموع فروش {now_jalali.strftime('%B %Y')} : {total:,} تومان")
 
     elif action == "users_started":
-        cursor.execute("SELECT COUNT(*) FROM orders WHERE starts_at >= ?", (month_start_greg,))
+        # query = f"SELECT COUNT(*) FROM orders WHERE starts_at >= '{month_start_jalali}'"
+        cursor.execute("SELECT COUNT(*) FROM orders WHERE starts_at >= ?", (str(month_start_jalali),))
+        # cursor.execute(query)
         count = cursor.fetchone()[0]
+        print(count)
         await callback.message.answer(f"👤 سرویس‌هایی که این ماه شروع شدن: {count}")
 
     elif action == "users_expired":
-        cursor.execute("SELECT COUNT(*) FROM orders WHERE expires_at >= ?", (month_start_greg,))
+        cursor.execute("SELECT COUNT(*) FROM orders WHERE expires_at >= ? and expires_at <= ?", (str(month_start_jalali),str(next_month_start_jalali)))
         count = cursor.fetchone()[0]
         await callback.message.answer(f"⏳ سرویس‌هایی که این ماه تموم میشن: {count}")
 

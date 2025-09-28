@@ -5,10 +5,8 @@ from services.activate_reserved_orders import activate_reserved_orders
 from services.db import expire_old_orders
 from services.db import get_active_orders_without_time, update_order_starts_at, update_order_expires_at
 from services.membership import check_membership
-# from services.limit_speed import limit_speed
-from services.new_limit_speed import limit_speed
-# from services.usage_logger import log_usage
-from services.new_usage_logger import log_usage
+from services.limit_speed import limit_speed
+from services.usage_logger import log_usage
 from services.notifier import notifier
 
 
