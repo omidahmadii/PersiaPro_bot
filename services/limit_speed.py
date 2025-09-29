@@ -173,18 +173,22 @@ def limit_speed():
             continue
 
             # رد کرده
-        if applied_speed == "128k":
+        if applied_speed == "128k" or applied_speed == "256":
             continue  # قبلاً لیمیت شده
             # رد کرده
 
-        if applied_speed == "1m" and total_mb > (limit_mb + 10240):
-            apply_limit(username, order_id, speed='128k')
+        if applied_speed == "1m" and total_mb > (limit_mb + 20480):
+            apply_limit(username, order_id, speed='256k')
+            continue
+
+        if applied_speed == "4m" and total_mb > (limit_mb + 10240):
+            apply_limit(username, order_id, speed='1m')
             continue
 
         if not applied_speed:
             # لیمیت کن
             # print(usage_id, username, total_mb, limit_mb, total_mb - limit_mb)
-            apply_limit(username, order_id, speed='1m')
+            apply_limit(username, order_id, speed='4m')
             text = format_limit_notification(username, total_mb, limit_mb)
             send_notification(user_id=user_id, text=text)
             for admin in ADMINS:
