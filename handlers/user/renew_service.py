@@ -15,7 +15,6 @@ from aiogram.types import (
     InlineKeyboardMarkup,
 )
 
-from handlers.user.get_cards import show_cards
 from keyboards.user_main_menu import user_main_menu_keyboard
 from services import IBSng
 from services.IBSng import change_group
@@ -30,8 +29,10 @@ from services.db import (
     get_active_locations_by_category,
     get_order_status
 )
+from services.db import get_active_cards
 
 router = Router()
+
 
 # ---------------- plan_picker (merged & adapted for renew) ---------------- #
 
@@ -237,7 +238,8 @@ def make_initial_renew_keyboard(all_plans: List[Dict]) -> Tuple[str, InlineKeybo
     if len(categories) <= 1:
         only_cat = categories[0] if categories else None
         plans_for_cat = [p for p in active_plans if normalize_category(p.get("category")) == (only_cat or "standard")]
-        return "plans", keyboard_durations(plans_for_cat, back_to="category", show_back=False, prefix="renew"), only_cat, plans_for_cat
+        return "plans", keyboard_durations(plans_for_cat, back_to="category", show_back=False,
+                                           prefix="renew"), only_cat, plans_for_cat
 
     return "categories", keyboard_categories(categories, prefix="renew"), None, []
 
@@ -305,7 +307,8 @@ async def renew_choose_service(callback: CallbackQuery, state: FSMContext):
         if not available_locations:
             return await callback.message.edit_text("❌ فعلاً لوکیشنی برای این دسته موجود نیست.")
         await state.set_state(RenewStates.choosing_location)
-        return await callback.message.edit_text("ابتدا لوکیشن را انتخاب کنید:", reply_markup=keyboard_locations(available_locations, prefix="renew"))
+        return await callback.message.edit_text("ابتدا لوکیشن را انتخاب کنید:",
+                                                reply_markup=keyboard_locations(available_locations, prefix="renew"))
 
     if kind == "categories":
         await state.set_state(RenewStates.choosing_category)
@@ -379,7 +382,8 @@ async def renew_choose_location(callback: CallbackQuery, state: FSMContext):
         "لطفاً پلن تمدید را انتخاب کنید:\n"
         "ℹ️ این سرویس‌ها دارای «آستانه مصرف منصفانه» هستند؛ با عبور از آستانه، سرویس قطع نمی‌شود."
     )
-    return await callback.message.edit_text(text, reply_markup=keyboard_durations(plans, back_to="location", prefix="renew"))
+    return await callback.message.edit_text(text,
+                                            reply_markup=keyboard_durations(plans, back_to="location", prefix="renew"))
 
 
 # ---------------- Step 4: Choose Plan ---------------- #
@@ -420,7 +424,8 @@ async def renew_choose_plan(callback: CallbackQuery, state: FSMContext):
         "",
         "لطفاً تایید کنید:",
     ]
-    return await callback.message.edit_text("\n".join(summary), reply_markup=keyboard_confirm(prefix="renew"), parse_mode="Markdown")
+    return await callback.message.edit_text("\n".join(summary), reply_markup=keyboard_confirm(prefix="renew"),
+                                            parse_mode="Markdown")
 
 
 # ---------------- Step 5: Confirm & Process ---------------- #
@@ -439,13 +444,6 @@ async def renew_confirm_and_process(callback: CallbackQuery, state: FSMContext):
     current_balance = get_user_balance(user_id)
     plan_price = selected_plan["price"]
 
-    if current_balance < plan_price:
-        await state.clear()
-        await callback.message.edit_text(
-            f"❌ موجودی کافی نیست.\n💰 قیمت: {format_price(plan_price)} تومان\n💳 موجودی: {format_price(current_balance)} تومان"
-        )
-        return await show_cards(callback.message, state)
-
     # منطق تمدید
     plan_id = selected_plan["id"]
     plan_name = selected_plan["name"]
@@ -457,15 +455,15 @@ async def renew_confirm_and_process(callback: CallbackQuery, state: FSMContext):
     # تشخیص انقضا
     expires_at_greg = jdatetime.datetime.strptime(selected_service["expires_at"], "%Y-%m-%d %H:%M").togregorian()
     is_expired = selected_service["status"] == "expired" or expires_at_greg < datetime.datetime.now()
-
     latest_status = get_order_status(service_id)
+
     if latest_status is None:
         await state.clear()
         return await edit_then_show_main_menu(callback.message, "❌ سفارش پیدا نشد. لطفاً دوباره تلاش کنید.")
         # اگر قبلاً رزرو یا تمدید شده، دیگر اجازه تمدید مجدد نده
 
-    BLOCK_STATUSES = {"waiting_for_renewal", "reserved", "renewed"}
-    if latest_status in BLOCK_STATUSES:
+    block_statuses = {"waiting_for_renewal", "reserved", "renewed"}
+    if latest_status in block_statuses:
         await state.clear()
         await callback.message.edit_text(
             "⚠️ این سرویس قبلاً برای تمدید ثبت شده یا هم‌اکنون تمدید شده است. "
@@ -473,52 +471,84 @@ async def renew_confirm_and_process(callback: CallbackQuery, state: FSMContext):
         )
         return await callback.message.answer("بازگشت به منوی اصلی", reply_markup=user_main_menu_keyboard())
 
-    # کسر موجودی
-    new_balance = current_balance - plan_price
-    update_user_balance(user_id, new_balance)
+    if current_balance < plan_price:
 
-    if is_expired:
-        # تمدید فوری
-        update_order_status(order_id=service_id, new_status="renewed")
-        insert_renewed_order(user_id, plan_id, service_username, plan_price, "active", service_id, volume_gb)
-
-        IBSng.reset_account_client(username=service_username)
-        change_group(username=service_username, group=plan_group_name)
+        update_order_status(order_id=service_id, new_status="waiting_for_renewal_not_paid")
+        insert_renewed_order(user_id, plan_id, service_username, plan_price, "waiting_for_payment", service_id,
+                             volume_gb)
 
         text_admin = (
-            "🔔 تمدید انجام شد (فعالسازی فوری)\n"
+            "🔔 درخواست تمدید ایجاد شد (وضعیت در انتظار پرداخت)\n"
             f"👤 کاربر: {user_id}\n🆔 یوزرنیم: {service_username}\n📦 پلن: {plan_name}\n"
-            f"⏳ مدت: {plan_duration_months} ماه\n💳 مبلغ: {format_price(plan_price)} تومان\n🟢 وضعیت: فعال شد"
+            f"⏳ مدت: {plan_duration_months} ماه\n💳 مبلغ: {format_price(plan_price)} تومان\n🟢 وضعیت: در انتظار پرداخت"
+        )
+        await send_message_to_admins(text_admin)
+        required_balanace = plan_price - current_balance
+        active_cards = get_active_cards()
+        cards_text = ""
+        for card in active_cards:
+            cards_text += (
+                f"🏦 {card['bank_name']} "
+                f"به نام {card['owner_name']}\n"
+                f"<code>\u200F{card['card_number']}</code>\n\n"
+            )
+
+        text_user = (
+            f"⚠️ موجودی شما کافی نمی باشد.\n"
+            f" سرویس شما در وضعیت در انتظار پرداخت قرار گرفت.\n\n"
+            f"لطفا مبلغ {format_price(required_balanace)} تومان به کارت زیر واریز نموده و تصویر آن را ارسال نمایید.\n\n"
+            f"{cards_text}\n"
+            f"⚠️ پس از تایید مبلغ توسط ادمین سرویس شما فعال خواهد شد."
+        )
+        await callback.message.answer(text=text_user, parse_mode="HTML", reply_markup=user_main_menu_keyboard())
+        await state.clear()
+    else:
+        # کسر موجودی
+        new_balance = current_balance - plan_price
+        update_user_balance(user_id, new_balance)
+
+        if is_expired:
+            # تمدید فوری
+            update_order_status(order_id=service_id, new_status="renewed")
+            insert_renewed_order(user_id, plan_id, service_username, plan_price, "active", service_id, volume_gb)
+
+            IBSng.reset_account_client(username=service_username)
+            change_group(username=service_username, group=plan_group_name)
+
+            text_admin = (
+                "🔔 تمدید انجام شد (فعالسازی فوری)\n"
+                f"👤 کاربر: {user_id}\n🆔 یوزرنیم: {service_username}\n📦 پلن: {plan_name}\n"
+                f"⏳ مدت: {plan_duration_months} ماه\n💳 مبلغ: {format_price(plan_price)} تومان\n🟢 وضعیت: فعال شد"
+            )
+            await send_message_to_admins(text_admin)
+
+            await callback.message.edit_text(
+                f"✅ تمدید با موفقیت انجام شد و سرویس شما فعال گردید.\n\n"
+                f"🔸 پلن: {plan_name}\n"
+                f"👤 نام کاربری: `{service_username}`\n"
+                f"💰 موجودی: {format_price(new_balance)} تومان",
+                parse_mode="Markdown"
+            )
+            await callback.message.answer("بازگشت به منوی اصلی", reply_markup=user_main_menu_keyboard())
+            await state.clear()
+            return
+
+        # اگر هنوز فعال است → رزرو تمدید در انتهای دوره
+        update_order_status(order_id=service_id, new_status="waiting_for_renewal")
+        insert_renewed_order(user_id, plan_id, service_username, plan_price, "reserved", service_id, volume_gb)
+
+        text_admin = (
+            "🔔 تمدید رزروی ثبت شد\n"
+            f"👤 کاربر: {user_id}\n🆔 یوزرنیم: {service_username}\n📦 پلن: {plan_name}\n"
+            f"⏳ مدت: {plan_duration_months} ماه\n💳 مبلغ: {format_price(plan_price)} تومان\n🟡 وضعیت: در انتظار اتمام دوره"
         )
         await send_message_to_admins(text_admin)
 
         await callback.message.edit_text(
-            f"✅ تمدید با موفقیت انجام شد و سرویس شما فوراً فعال گردید.\n\n"
-            f"🔸 پلن: {plan_name}\n"
-            f"👤 نام کاربری: `{service_username}`\n"
-            f"💰 موجودی: {format_price(new_balance)} تومان",
-            parse_mode="Markdown"
+            "✅ تمدید شما ثبت شد و پس از پایان دوره‌ی فعلی به‌صورت خودکار اعمال می‌شود."
         )
         await callback.message.answer("بازگشت به منوی اصلی", reply_markup=user_main_menu_keyboard())
         await state.clear()
-        return
-
-    # اگر هنوز فعال است → رزرو تمدید در انتهای دوره
-    update_order_status(order_id=service_id, new_status="waiting_for_renewal")
-    insert_renewed_order(user_id, plan_id, service_username, plan_price, "reserved", service_id, volume_gb)
-
-    text_admin = (
-        "🔔 تمدید رزروی ثبت شد\n"
-        f"👤 کاربر: {user_id}\n🆔 یوزرنیم: {service_username}\n📦 پلن: {plan_name}\n"
-        f"⏳ مدت: {plan_duration_months} ماه\n💳 مبلغ: {format_price(plan_price)} تومان\n🟡 وضعیت: در انتظار اتمام دوره"
-    )
-    await send_message_to_admins(text_admin)
-
-    await callback.message.edit_text(
-        "✅ تمدید شما ثبت شد و پس از پایان دوره‌ی فعلی به‌صورت خودکار اعمال می‌شود."
-    )
-    await callback.message.answer("بازگشت به منوی اصلی", reply_markup=user_main_menu_keyboard())
-    await state.clear()
 
 
 # ---------------- Back Navigation ---------------- #
@@ -600,14 +630,16 @@ async def renew_go_back(callback: CallbackQuery, state: FSMContext):
         elif category == "fixed_ip" and location:
             plans = [
                 p for p in get_all_plans()
-                if p.get("location") == location and normalize_category(p.get("category")) == "fixed_ip" and _is_active(p)
+                if
+                p.get("location") == location and normalize_category(p.get("category")) == "fixed_ip" and _is_active(p)
             ]
             await state.set_state(RenewStates.choosing_plan)
             text = (
                 "لطفاً پلن تمدید را انتخاب کنید:\n"
                 "ℹ️ این سرویس‌ها دارای «آستانه مصرف منصفانه» هستند؛ با عبور از آستانه، سرویس قطع نمی‌شود."
             )
-            return await callback.message.edit_text(text, reply_markup=keyboard_durations(plans, back_to="location", prefix="renew"))
+            return await callback.message.edit_text(text, reply_markup=keyboard_durations(plans, back_to="location",
+                                                                                          prefix="renew"))
 
         # fallback به ورودی
         all_plans = get_all_plans()

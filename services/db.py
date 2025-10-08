@@ -557,6 +557,17 @@ def get_reserved_orders():
         return [dict(r) for r in cur.fetchall()]
 
 
+def get_waiting_for_payment_orders():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("""
+                SELECT * FROM orders
+                WHERE status = 'waiting_for_payment'
+            """)
+        return [dict(r) for r in cur.fetchall()]
+
+
 def get_order_data(order_id):
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
@@ -750,5 +761,13 @@ def get_order_status(order_id: int) -> Optional[str]:
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.cursor()
         cur.execute("SELECT status FROM orders WHERE id = ?", (order_id,))
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def get_plan_name(plan_id: int) -> Optional[str]:
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM plans WHERE id = ?", (plan_id,))
         row = cur.fetchone()
         return row[0] if row else None

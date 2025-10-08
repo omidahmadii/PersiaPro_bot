@@ -8,6 +8,7 @@ from services.membership import check_membership
 from services.limit_speed import limit_speed
 from services.usage_logger import log_usage
 from services.notifier import notifier
+from services.activate_waiting_for_payment_orders import activate_waiting_for_payment_orders
 
 
 async def update_orders_time_from_ibs():
@@ -87,6 +88,16 @@ async def limit_speed_loop():
         await asyncio.sleep(60 * 60 * 24)  # هر 24 ساعت
 
 
+async def activate_waiting_for_payment_orders_loop():
+    while True:
+        try:
+            await asyncio.to_thread(activate_waiting_for_payment_orders)
+        except Exception as e:
+            print(f"خطا در فعال کردن سفارش‌های پرداخت نشده: {e}")
+        print("Activate Waiting For Payment orders loop finished.")
+        await asyncio.sleep(60)
+
+
 async def scheduler():
     await asyncio.gather(
         #update_orders_time_from_ibs(),
@@ -96,4 +107,5 @@ async def scheduler():
         #log_usage_loop(),
         #check_membership_loop(),
         #limit_speed_loop(),
+        activate_waiting_for_payment_orders_loop(),
     )

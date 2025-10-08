@@ -32,7 +32,9 @@ async def my_services_handler(message: types.Message):
         status_map = {
             "active": "✅ فعال",
             "waiting_for_renewal": "✅ فعال",
+            "waiting_for_renewal_not_paid": "✅ فعال",
             "reserved": "🎟 ذخیره",
+            "waiting_for_payment": "🎟 در انتظار پرداخت",
             "expired": "⛔️ منقضی",
             "renewed": "⛔️ منقضی",
         }
