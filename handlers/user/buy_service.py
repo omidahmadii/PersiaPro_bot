@@ -419,7 +419,7 @@ async def confirm_and_create(callback: CallbackQuery, state: FSMContext):
             status="active",
             volume_gb=plan.get("volume_gb"),
         )
-        assign_account_to_order(account_id, order_id, plan["id"], "active")
+        assign_account_to_order(account_id)
     except Exception as e:
         print(f"خطا در درج سفارش: {e}")
         await state.clear()

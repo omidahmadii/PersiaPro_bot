@@ -107,5 +107,5 @@ async def scheduler():
         #log_usage_loop(),
         #check_membership_loop(),
         #limit_speed_loop(),
-        activate_waiting_for_payment_orders_loop(),
+        # activate_waiting_for_payment_orders_loop(),
     )

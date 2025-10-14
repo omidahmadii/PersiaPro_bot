@@ -462,7 +462,7 @@ async def renew_confirm_and_process(callback: CallbackQuery, state: FSMContext):
         return await edit_then_show_main_menu(callback.message, "❌ سفارش پیدا نشد. لطفاً دوباره تلاش کنید.")
         # اگر قبلاً رزرو یا تمدید شده، دیگر اجازه تمدید مجدد نده
 
-    block_statuses = {"waiting_for_renewal", "reserved", "renewed"}
+    block_statuses = {"waiting_for_renewal", "reserved", "renewed", "waiting_for_renewal_not_paid"}
     if latest_status in block_statuses:
         await state.clear()
         await callback.message.edit_text(

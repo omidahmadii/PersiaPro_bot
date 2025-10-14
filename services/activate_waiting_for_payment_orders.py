@@ -20,7 +20,6 @@ def activate_waiting_for_payment_orders() -> None:
 
 
 def _maybe_waiting_for_payment_order(waiting_for_payment: dict) -> None:
-    print(waiting_for_payment)
     user_id = waiting_for_payment.get("user_id")
     plan_price = waiting_for_payment.get("price")
     current_balance = get_user_balance(user_id=user_id)

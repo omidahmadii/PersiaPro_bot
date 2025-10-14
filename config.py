@@ -19,5 +19,13 @@ IBS_URL_EDIT = os.getenv("IBS_URL_EDIT", "")
 IBS_URL_CONNECTIONS = os.getenv("IBS_URL_CONNECTIONS", "")
 IBS_URL_DELETE = os.getenv("IBS_URL_DELETE", "")
 
+# Cloudflare config
+CF_ZONE_ID = os.getenv("CF_ZONE_ID")
+CF_EMAIL = os.getenv("CF_EMAIL")
+CF_API_KEY = os.getenv("CF_API_KEY")
+
+
+# Sites
+CF_RECORD_NAME = os.getenv("CF_RECORD_NAME", "ov")
 
 

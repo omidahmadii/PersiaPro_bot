@@ -370,28 +370,14 @@ def find_free_account():
 
 
 # رزرو اکانت برای یک سفارش خاص
-def assign_account_to_order(account_id: int, order_id: int, plan_id: int, status: str):
+def assign_account_to_order(account_id: int):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute("""
             UPDATE accounts
-            SET status = 'assigned',
-                order_id = ?,
-                plan_id = ?,
-                status = ?
+            SET status = 'assigned'
             WHERE id = ?
-        """, (order_id, plan_id, status, account_id))
-        conn.commit()
-
-
-# اضافه کردن یک اکانت جدید (برای موقع ساخت دستی یا اولیه اکانت‌ها)
-def add_account(username: str, password: str, comment: str = ""):
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO accounts (username, password, comment)
-            VALUES (?, ?, ?)
-        """, (username, password, comment))
+        """, (account_id,))
         conn.commit()
 
 
@@ -416,17 +402,6 @@ def update_order_status(order_id: int, new_status: str):
             WHERE id = ?
         """, (new_status, order_id))
         conn.commit()
-
-
-# گرفتن اطلاعات اکانت بر اساس آیدی سفارش
-def get_account_by_order_id(order_id: int):
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT * FROM accounts
-            WHERE order_id = ?
-        """, (order_id,))
-        return cursor.fetchone()
 
 
 def get_user_services(user_id: int):
