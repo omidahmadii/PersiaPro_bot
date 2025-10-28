@@ -267,6 +267,19 @@ def insert_renewed_order(user_id, plan_id, username, price, status, is_renewal_o
         return order_id
 
 
+def insert_renewed_order_with_auto_renew(user_id, plan_id, username, price, status, is_renewal_of_order, volume_gb, auto_renew):
+    created_at = datetime.now().isoformat()
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+                       INSERT INTO orders (user_id, plan_id, username, price, created_at, status, is_renewal_of_order, volume_gb, auto_renew)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?,?)
+                       ''', (user_id, plan_id, username, price, created_at, status, is_renewal_of_order, volume_gb, auto_renew))
+        order_id = cursor.lastrowid  # گرفتن آیدی آخرین ردیف واردشده
+        conn.commit()
+        return order_id
+
+
 def update_user_balance(user_id, new_balance):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
@@ -488,6 +501,38 @@ def expire_old_orders():
                 cursor.execute("""
                     UPDATE orders
                     SET status = 'expired'
+                    WHERE id = ?
+                """, (row['id'],))
+        except Exception as e:
+            print(f"خطا در بررسی سفارش {row['id']}: {e}")
+
+    conn.commit()
+    conn.close()
+
+
+def archive_old_orders():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    now = jdatetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    days_ago = jdatetime.timedelta(days=1)
+    cursor.execute("""
+        SELECT id, expires_at FROM orders
+        WHERE status = 'expired' or status = 'renewed'
+    """)
+    rows = cursor.fetchall()
+
+    for row in rows:
+        try:
+            expires_at_str = row['expires_at']  # مثلاً: "1403-04-16 09:05"
+            expires_at = jdatetime.datetime.strptime(expires_at_str, "%Y-%m-%d %H:%M")
+            now_jdt = jdatetime.datetime.strptime(now, "%Y-%m-%d %H:%M:%S")
+            thirty_days_ago_jdt = now_jdt - jdatetime.timedelta(days=45)
+            if expires_at < thirty_days_ago_jdt:
+                cursor.execute("""
+                    UPDATE orders
+                    SET status = 'archived'
                     WHERE id = ?
                 """, (row['id'],))
         except Exception as e:
@@ -740,9 +785,47 @@ def get_order_status(order_id: int) -> Optional[str]:
         return row[0] if row else None
 
 
+def get_plan_info(plan_id: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row  # خروجی به شکل dict
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM plans WHERE id = ?", (plan_id,))
+        row = cursor.fetchone()
+        return dict(row)
+
+
 def get_plan_name(plan_id: int) -> Optional[str]:
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.cursor()
         cur.execute("SELECT name FROM plans WHERE id = ?", (plan_id,))
         row = cur.fetchone()
         return row[0] if row else None
+
+
+def get_plan_price(plan_id: int) -> int:
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT price FROM plans WHERE id = ?", (plan_id,))
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def get_auto_renew_orders():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row  # خروجی به شکل dict
+        cursor = conn.cursor()
+
+        now = jdatetime.datetime.now()
+        one_day_later = now + jdatetime.timedelta(days=1)
+        print(one_day_later)
+        cursor.execute("""
+                SELECT * FROM orders
+                WHERE auto_renew = 1
+                AND status IN ('active','expired')
+                AND expires_at <= ?
+            """, (one_day_later.strftime("%Y-%m-%d %H:%M:%S"),))
+
+        rows = cursor.fetchall()
+        return [dict(row) for row in rows]
+
+

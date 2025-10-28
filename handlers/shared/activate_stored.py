@@ -44,7 +44,7 @@ def kb_services_inline(services: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
 def kb_confirm(prefix: str = "activate") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ تایید فعال‌سازی", callback_data=f"{prefix}|confirm")],
-        [InlineKeyboardButton(text="❌ انصراف", callback_data=f"{prefix}|cancel")],
+        [InlineKeyboardButton(text="❌ انصراف", callback_data=f"{prefix}|cancel_not_paid_waiting_for_payment_orders.py")],
     ])
 
 
@@ -156,7 +156,7 @@ async def activate_confirm(callback: CallbackQuery, state: FSMContext):
     await state.clear()
 
 
-@router.callback_query(F.data == "activate|cancel")
+@router.callback_query(F.data == "activate|cancel_not_paid_waiting_for_payment_orders.py")
 async def activate_cancel(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.edit_text(

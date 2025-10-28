@@ -33,7 +33,7 @@ async def start_feedback(msg: Message, state: FSMContext):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📌 پیشنهاد", callback_data="feedback:suggestion")],
         [InlineKeyboardButton(text="⚠️ انتقاد", callback_data="feedback:complaint")],
-        [InlineKeyboardButton(text="🔙 بازگشت به منوی اصلی", callback_data="feedback:cancel")]
+        [InlineKeyboardButton(text="🔙 بازگشت به منوی اصلی", callback_data="feedback:cancel_not_paid_waiting_for_payment_orders.py")]
     ])
 
     # حذف کیبورد معمولی و نمایش اینلاین‌کیبورد
@@ -45,7 +45,7 @@ async def start_feedback(msg: Message, state: FSMContext):
 
 
 # لغو بازخورد و برگشت به منو
-@router.callback_query(F.data == "feedback:cancel")
+@router.callback_query(F.data == "feedback:cancel_not_paid_waiting_for_payment_orders.py")
 async def cancel_feedback(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.edit_text("از بخش بازخورد خارج شدید. ✅")

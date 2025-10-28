@@ -81,7 +81,7 @@ async def txn_selected(callback: CallbackQuery, state: FSMContext):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ تایید", callback_data="approve")],
         [InlineKeyboardButton(text="❌ رد", callback_data="reject")],
-        [InlineKeyboardButton(text="🔙 بازگشت به منوی اصلی", callback_data="cancel")]
+        [InlineKeyboardButton(text="🔙 بازگشت به منوی اصلی", callback_data="cancel_not_paid_waiting_for_payment_orders.py")]
     ])
     await callback.message.answer("برای ادامه انتخاب کنید:", reply_markup=keyboard)
     await state.set_state(VerifyTxn.waiting_for_action)
@@ -97,7 +97,7 @@ async def approve_handler(callback: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="375000", callback_data="amount_375000"),
          InlineKeyboardButton(text="450000", callback_data="amount_450000"),
          InlineKeyboardButton(text="500000", callback_data="amount_500000")],
-        [InlineKeyboardButton(text="🔙 بازگشت به منوی اصلی", callback_data="cancel")]
+        [InlineKeyboardButton(text="🔙 بازگشت به منوی اصلی", callback_data="cancel_not_paid_waiting_for_payment_orders.py")]
     ])
     await callback.message.answer("مبلغ تایید شده را انتخاب کنید یا وارد کنید:", reply_markup=keyboard)
     await state.set_state(VerifyTxn.waiting_for_amount)
@@ -245,7 +245,7 @@ async def amount_typed(message: Message, state: FSMContext, bot: Bot):
     await state.clear()
 
 
-@router.callback_query(VerifyTxn.waiting_for_action, F.data == "cancel")
+@router.callback_query(VerifyTxn.waiting_for_action, F.data == "cancel_not_paid_waiting_for_payment_orders.py")
 async def cancel_handler(callback: CallbackQuery, state: FSMContext):
     keyboard = admin_main_menu_keyboard()
     await callback.message.answer("بازگشت به منوی اصلی.", reply_markup=keyboard)
