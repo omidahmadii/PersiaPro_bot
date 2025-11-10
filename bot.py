@@ -9,7 +9,7 @@ from handlers.admin import verify_transactions, temporary_charge, cards_managmen
 from handlers.shared import change_password, activate_stored
 from handlers.user import placeholder, feedback, get_cards
 from handlers.user import start, buy_service, my_services, account, tutorial, contact_support, payment, renew_service, \
-    FAQ
+    FAQ, tariffs
 from services.bot_instance import bot
 from services.db import create_tables
 from services.scheduler import scheduler  # همون فایلی که تسک رو نوشتی
@@ -45,6 +45,8 @@ async def main():
         reports.router,
         activate_stored.router,
         exec_commands.router,
+        tariffs.router,
+
 
         change_password.router,
         FAQ.router,
