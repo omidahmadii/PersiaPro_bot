@@ -434,7 +434,7 @@ def get_user_services(user_id: int):
                 JOIN plans ON orders.plan_id = plans.id
                 JOIN users ON orders.user_id = users.id
                 JOIN accounts ON orders.username = accounts.username
-                WHERE users.id = ? and orders.status is not "renewed" 
+                WHERE users.id = ? and orders.status not in ("renewed" ,"archived")
                 ORDER by orders.username,orders.created_at
             """, (user_id,))
         return cursor.fetchall()
@@ -516,7 +516,6 @@ def archive_old_orders():
     cursor = conn.cursor()
 
     now = jdatetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    days_ago = jdatetime.timedelta(days=1)
     cursor.execute("""
         SELECT id, expires_at FROM orders
         WHERE status = 'expired' or status = 'renewed'

@@ -134,6 +134,6 @@ async def scheduler():
         # limit_speed_loop(),
         # activate_waiting_for_payment_orders_loop(),
         # cancel_not_paid_waiting_for_payment_orders_loop()
-        auto_renew_loop()
+        # auto_renew_loop()
 
     )
