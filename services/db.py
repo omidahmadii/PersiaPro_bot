@@ -828,3 +828,11 @@ def get_auto_renew_orders():
         return [dict(row) for row in rows]
 
 
+def update_last_name(user_id: int, last_name: str):
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE users
+            SET last_name = ?
+            WHERE id = ?
+        """, (last_name, user_id))

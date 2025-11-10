@@ -23,6 +23,7 @@ from services.db import (
     update_user_balance,
     assign_account_to_order,
     get_active_locations_by_category,
+    update_last_name
 )
 
 router = Router()
@@ -263,8 +264,11 @@ class BuyServiceStates(StatesGroup):
 async def start_buy(message: Message, state: FSMContext):
     user_id = message.from_user.id
     first_name = message.from_user.first_name
+    last_name = message.from_user.last_name
     username = message.from_user.username
     role = "admin" if user_id in ADMINS else "user"
+    if last_name:
+        update_last_name(user_id=user_id, last_name=last_name)
 
     if not ensure_user_exists(user_id=user_id):
         add_user(user_id, first_name, username, role)

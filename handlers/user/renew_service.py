@@ -27,7 +27,8 @@ from services.db import (
     insert_renewed_order,
     update_order_status,
     get_active_locations_by_category,
-    get_order_status
+    get_order_status,
+    update_last_name,
 )
 from services.db import get_active_cards
 
@@ -272,6 +273,10 @@ def kb_services_inline(services: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
 async def renew_start(message: Message, state: FSMContext):
     user_id = message.from_user.id
     services = get_services_for_renew(user_id)
+
+    last_name = message.from_user.last_name
+    if last_name:
+        update_last_name(user_id=user_id, last_name=last_name)
 
     if not services:
         return await message.answer("⚠️ هیچ سرویسی برای تمدید پیدا نشد.", reply_markup=user_main_menu_keyboard())

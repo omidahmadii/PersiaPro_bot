@@ -7,6 +7,7 @@ from keyboards.admin_main_menu import admin_main_menu_keyboard
 from keyboards.user_main_menu import user_main_menu_keyboard
 from services.db import add_user
 from services.bot_instance import bot
+from services.db import update_last_name
 
 router = Router()
 
@@ -27,6 +28,7 @@ async def cmd_start(message: Message):
     user = message.from_user
     user_id = user.id
     first_name = user.first_name
+    last_name = user.last_name
     username = user.username
     role = "admin" if user_id in ADMINS else "user"
 
@@ -40,7 +42,7 @@ async def cmd_start(message: Message):
         bio = None
         print(f"خطا در دریافت bio: {e}")
 
-    user_info_to_print = {
+    user_info = {
         "id": user_id,
         "first_name": user.first_name,
         "last_name": getattr(user, "last_name", None),
@@ -53,9 +55,8 @@ async def cmd_start(message: Message):
         # شماره‌تلفن هم فقط وقتی هست که کاربر contact بدهد:
         "phone_number": None,
     }
-
-    print("🔎 User info on /start:", user_info_to_print)
-    # ----------------------------------------------------------------------
+    if last_name:
+        update_last_name(user_id=user_id, last_name=last_name)
 
     # ذخیره کاربر در دیتابیس
     add_user(user_id, first_name, username, role)

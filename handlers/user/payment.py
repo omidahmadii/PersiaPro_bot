@@ -9,7 +9,7 @@ from services.db import get_active_cards
 
 from config import ADMINS
 from keyboards.user_main_menu import user_main_menu_keyboard
-from services.db import insert_transaction, get_all_photo_hashes, ensure_user_exists, add_user
+from services.db import insert_transaction, get_all_photo_hashes, ensure_user_exists, add_user, update_last_name
 import hashlib
 
 router = Router()
@@ -29,6 +29,10 @@ async def catch_any_photo_as_receipt(message: Message, state: FSMContext, bot: B
     user_id = message.from_user.id
     first_name = message.from_user.first_name
     username = message.from_user.username
+    last_name = message.from_user.last_name
+    if last_name:
+        update_last_name(user_id=user_id, last_name=last_name)
+
     role = "admin" if user_id in ADMINS else "user"
     exists = ensure_user_exists(user_id=user_id)
     # اگر وجود نداشت، اضافه کن

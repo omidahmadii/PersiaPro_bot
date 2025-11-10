@@ -5,7 +5,7 @@ from aiogram.types import Message
 from config import ADMINS
 from keyboards.admin_main_menu import admin_main_menu_keyboard
 from keyboards.user_main_menu import user_main_menu_keyboard
-from services.db import get_active_cards
+from services.db import get_active_cards, update_last_name
 
 router = Router()
 
@@ -13,6 +13,11 @@ router = Router()
 @router.message(F.text == "💳 دریافت شماره کارت")
 async def show_cards(message: Message, state: FSMContext):
     user_id = message.from_user.id
+
+    last_name = message.from_user.last_name
+    if last_name:
+        update_last_name(user_id=user_id, last_name=last_name)
+
     role = "admin" if user_id in ADMINS else "user"
     keyboard = admin_main_menu_keyboard() if role == "admin" else user_main_menu_keyboard()
 
