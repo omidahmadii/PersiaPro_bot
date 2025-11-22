@@ -75,10 +75,9 @@ async def catch_any_photo_as_receipt(message: Message, state: FSMContext, bot: B
             chat_id=admin_id,
             photo=file_id,
             caption=(
-                f"📥 کاربر <a href='tg://user?id={user_id}'>{user_id}</a> فیش پرداخت ارسال کرد.\n"
-                f"نام: {message.from_user.first_name or 'ناموجود'}\n"
-                f"نام خانوادگی: {message.from_user.last_name or 'ناموجود'}\n"
-                f"یوزرنیم: @{message.from_user.username or 'ندارد'}"
+                f"📥 کاربر <a href='tg://user?id={user_id}'>{user_id} {first_name} {last_name or ' '}</a> \n"
+                f" فیش پرداخت ارسال کرد.\n"
+
             ),
             parse_mode="HTML"
         )

@@ -1,10 +1,10 @@
-import random
 from datetime import timedelta
+
 import jdatetime
 import requests
 
 import config
-from services.db import get_orders_for_notifications, update_order_last_notif_level
+from services.db import get_orders_for_notifications, update_order_last_notif_level, get_user_message_name
 
 TOKEN = config.BOT_TOKEN
 # ثابت جدید: بازهٔ سکوت
@@ -60,6 +60,10 @@ def notifier():
             if level_needed == 0:
                 continue  # هیچ پیامی لازم نیست
 
+            if order['status'] == 'waiting_for_renewal':
+                if level_needed < 3:
+                    continue
+
             last_level = order.get('last_notif_level') or 0
             if level_needed > last_level:
                 text = build_message(level_needed, order['status'], order)
@@ -77,6 +81,9 @@ def format_jdatetime(dt: jdatetime.datetime) -> str:
 
 def build_message(level: int, status: str, order: dict) -> str:
     username = order["username"]
+    user_id = order["user_id"]
+
+    user_message_name = get_user_message_name(user_id)
     expires_at_jdt = jdatetime.datetime.strptime(order["expires_at"], "%Y-%m-%d %H:%M")
     exact_time = format_jdatetime(expires_at_jdt)
 
@@ -111,5 +118,14 @@ def build_message(level: int, status: str, order: dict) -> str:
     action_line = "برای جلوگیری از قطع اتصال، همین حالا از منوی ربات گزینهٔ «تمدید سرویس» را انتخاب کنید."
     if level == 4:
         action_line = "برای فعال‌سازی مجدد، از منوی ربات «تمدید سرویس» را انتخاب کنید."
+    name = user_message_name.strip() if user_message_name else ""
 
-    return f"🔔 <b>{title}</b>\n\n{body}\n\n{action_line}"
+    if name:
+        name_text = f"{name} جان"
+    else:
+        name_text = "مشترک گرامی"
+
+    text = (f"📢 <b>{name_text}</b>\n\n"
+            f"{body}\n\n{action_line}")
+
+    return text

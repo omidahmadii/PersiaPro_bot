@@ -446,6 +446,9 @@ async def renew_confirm_and_process(callback: CallbackQuery, state: FSMContext):
 
     # کنترل موجودی
     user_id = callback.from_user.id
+    first_name = callback.from_user.first_name
+    last_name = callback.from_user.last_name
+
     current_balance = get_user_balance(user_id)
     plan_price = selected_plan["price"]
 
@@ -483,9 +486,13 @@ async def renew_confirm_and_process(callback: CallbackQuery, state: FSMContext):
                              volume_gb)
 
         text_admin = (
-            "🔔 درخواست تمدید ایجاد شد (وضعیت در انتظار پرداخت)\n"
-            f"👤 کاربر: {user_id}\n🆔 یوزرنیم: {service_username}\n📦 پلن: {plan_name}\n"
-            f"⏳ مدت: {plan_duration_months} ماه\n💳 مبلغ: {format_price(plan_price)} تومان\n🟢 وضعیت: در انتظار پرداخت"
+            f"🔔 درخواست تمدید ایجاد شد (وضعیت در انتظار پرداخت)\n"
+            f"📥 کاربر <a href='tg://user?id={user_id}'>{user_id} {first_name} {last_name or ' '}</a> \n"
+            f"🆔 یوزرنیم: {service_username}\n"
+            f"📦 پلن: {plan_name}\n"
+            f"⏳ مدت: {plan_duration_months} ماه\n"
+            f"💳 مبلغ: {format_price(plan_price)} تومان\n"
+            f"🟢 وضعیت: در انتظار پرداخت"
         )
         await send_message_to_admins(text_admin)
         required_balanace = plan_price - current_balance
@@ -522,8 +529,12 @@ async def renew_confirm_and_process(callback: CallbackQuery, state: FSMContext):
 
             text_admin = (
                 "🔔 تمدید انجام شد (فعالسازی فوری)\n"
-                f"👤 کاربر: {user_id}\n🆔 یوزرنیم: {service_username}\n📦 پلن: {plan_name}\n"
-                f"⏳ مدت: {plan_duration_months} ماه\n💳 مبلغ: {format_price(plan_price)} تومان\n🟢 وضعیت: فعال شد"
+                f"📥 کاربر <a href='tg://user?id={user_id}'>{user_id} {first_name} {last_name or ' '}</a> \n"
+                f"🆔 یوزرنیم: {service_username}\n📦 پلن: "
+                f"{plan_name}\n"
+                f"⏳ مدت: {plan_duration_months} ماه\n"
+                f"💳 مبلغ: {format_price(plan_price)} تومان\n"
+                f"🟢 وضعیت: فعال شد"
             )
             await send_message_to_admins(text_admin)
 
@@ -544,8 +555,12 @@ async def renew_confirm_and_process(callback: CallbackQuery, state: FSMContext):
 
         text_admin = (
             "🔔 تمدید رزروی ثبت شد\n"
-            f"👤 کاربر: {user_id}\n🆔 یوزرنیم: {service_username}\n📦 پلن: {plan_name}\n"
-            f"⏳ مدت: {plan_duration_months} ماه\n💳 مبلغ: {format_price(plan_price)} تومان\n🟡 وضعیت: در انتظار اتمام دوره"
+            f"📥 کاربر <a href='tg://user?id={user_id}'>{user_id} {first_name} {last_name or ' '}</a> \n"
+            f"🆔 یوزرنیم: {service_username}\n📦 پلن: "
+            f"{plan_name}\n"
+            f"⏳ مدت: {plan_duration_months} ماه\n"
+            f"💳 مبلغ: {format_price(plan_price)} تومان\n"
+            f"🟡 وضعیت: در انتظار اتمام دوره"
         )
         await send_message_to_admins(text_admin)
 

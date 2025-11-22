@@ -8,7 +8,7 @@ async def send_message_to_admins(text: str):
     try:
         for admin_id in ADMINS:
             try:
-                await bot.send_message(admin_id, text)
+                await bot.send_message(admin_id, text, parse_mode="HTML")
             except Exception:
                 # نذار یک ادمین خراب، کل حلقه رو بترکونه
                 pass

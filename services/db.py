@@ -267,14 +267,16 @@ def insert_renewed_order(user_id, plan_id, username, price, status, is_renewal_o
         return order_id
 
 
-def insert_renewed_order_with_auto_renew(user_id, plan_id, username, price, status, is_renewal_of_order, volume_gb, auto_renew):
+def insert_renewed_order_with_auto_renew(user_id, plan_id, username, price, status, is_renewal_of_order, volume_gb,
+                                         auto_renew):
     created_at = datetime.now().isoformat()
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute('''
                        INSERT INTO orders (user_id, plan_id, username, price, created_at, status, is_renewal_of_order, volume_gb, auto_renew)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?,?)
-                       ''', (user_id, plan_id, username, price, created_at, status, is_renewal_of_order, volume_gb, auto_renew))
+                       ''', (
+        user_id, plan_id, username, price, created_at, status, is_renewal_of_order, volume_gb, auto_renew))
         order_id = cursor.lastrowid  # گرفتن آیدی آخرین ردیف واردشده
         conn.commit()
         return order_id
@@ -629,7 +631,7 @@ def get_orders_for_notifications(expires_at):
         cursor.execute("""
                 SELECT id, user_id, username, expires_at, status, last_notif_level
             FROM orders
-            WHERE status IN ('active', 'waiting_for_renewal')
+            WHERE status IN ('active', 'waiting_for_renewal', 'waiting_for_renewal_not_paid')
             AND expires_at IS NOT NULL
             AND expires_at <= ?
             """, (expires_at,))
@@ -816,7 +818,6 @@ def get_auto_renew_orders():
 
         now = jdatetime.datetime.now()
         one_day_later = now + jdatetime.timedelta(days=1)
-        print(one_day_later)
         cursor.execute("""
                 SELECT * FROM orders
                 WHERE auto_renew = 1
@@ -836,3 +837,11 @@ def update_last_name(user_id: int, last_name: str):
             SET last_name = ?
             WHERE id = ?
         """, (last_name, user_id))
+
+
+def get_user_message_name(user_id: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT message_name FROM users WHERE id = ?", (user_id,))
+        row = cur.fetchone()
+        return row[0] if row else None

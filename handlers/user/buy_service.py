@@ -400,6 +400,9 @@ async def confirm_and_create(callback: CallbackQuery, state: FSMContext):
         return await edit_then_show_main_menu(callback.message, "خطا در دریافت اطلاعات پلن. دوباره تلاش کنید.")
 
     user_id = callback.from_user.id
+    first_name = callback.from_user.first_name
+    last_name = callback.from_user.last_name
+
     user_balance = get_user_balance(user_id)
     if user_balance < plan["price"]:
         await state.clear()
@@ -446,14 +449,16 @@ async def confirm_and_create(callback: CallbackQuery, state: FSMContext):
     )
 
     admin_message = (
-        f"📢 کاربر {callback.from_user.full_name} (ID: {user_id})\n"
+        f"📥 کاربر <a href='tg://user?id={user_id}'>{user_id} {first_name} {last_name or ' '}</a> \n"
+        f"سرویس جدید خریداری کرد\n"
         f"پلن: {plan['name']}\n"
         f"یوزرنیم: `{account_username}`\n"
+        f"رمزعبور: `{account_password}`\n"
         f"مبلغ: {format_price(plan['price'])} تومان"
     )
     for admin_id in ADMINS:
         try:
-            await callback.bot.send_message(admin_id, admin_message, parse_mode="Markdown")
+            await callback.bot.send_message(admin_id, admin_message, parse_mode="HTML")
         except Exception as e:
             print(f"خطا در ارسال به ادمین {admin_id}: {e}")
 

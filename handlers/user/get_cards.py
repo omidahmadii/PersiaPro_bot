@@ -11,9 +11,8 @@ router = Router()
 
 
 @router.message(F.text == "💳 دریافت شماره کارت")
-async def show_cards(message: Message, state: FSMContext):
+async def show_cards(message: Message):
     user_id = message.from_user.id
-
     last_name = message.from_user.last_name
     if last_name:
         update_last_name(user_id=user_id, last_name=last_name)

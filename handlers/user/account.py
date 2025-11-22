@@ -3,8 +3,8 @@ from aiogram.types import Message
 
 from config import ADMINS
 from keyboards.admin_main_menu import admin_main_menu_keyboard
-from services.db import get_user_info
 from keyboards.user_main_menu import user_main_menu_keyboard
+from services.db import get_user_info
 
 router = Router()
 
@@ -27,7 +27,6 @@ async def show_user_profile(message: Message):
             f"💰 موجودی: {balance} تومان\n"
             f"📅 عضویت: {created_at.split('T')[0]}"
         )
-
 
     else:
         text = "❌ اطلاعاتی برای شما یافت نشد!"
