@@ -1,14 +1,11 @@
 import asyncio
 from pathlib import Path
-
 from aiogram import Router, F, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message
-from services.db import get_active_cards
-
 from config import ADMINS
-from keyboards.user_main_menu import user_main_menu_keyboard
+from keyboards.main_menu import user_main_menu_keyboard
 from services.db import insert_transaction, get_all_photo_hashes, ensure_user_exists, add_user, update_last_name
 import hashlib
 

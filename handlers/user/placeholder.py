@@ -2,7 +2,7 @@ from aiogram import Router
 from aiogram.types import Message
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
-from keyboards.user_main_menu import user_main_menu_keyboard
+from keyboards.main_menu import user_main_menu_keyboard
 
 router = Router()
 

@@ -3,8 +3,7 @@ from aiogram.types import Message
 from aiogram.exceptions import TelegramBadRequest
 
 from config import ADMINS, CHANNEL_ID
-from keyboards.admin_main_menu import admin_main_menu_keyboard
-from keyboards.user_main_menu import user_main_menu_keyboard
+from keyboards.main_menu import user_main_menu_keyboard, admin_main_menu_keyboard
 from services.db import add_user
 from services.bot_instance import bot
 from services.db import update_last_name

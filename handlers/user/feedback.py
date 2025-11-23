@@ -6,7 +6,7 @@ from datetime import datetime
 from asyncio import create_task, sleep
 
 from config import ADMINS
-from keyboards.user_main_menu import user_main_menu_keyboard
+from keyboards.main_menu import user_main_menu_keyboard
 from services.bot_instance import bot
 from services.db import insert_feedback
 

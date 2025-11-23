@@ -7,7 +7,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from config import DB_PATH, ADMINS
-from keyboards.admin_main_menu import admin_main_menu_keyboard  # فرض بر وجودش
+from keyboards.main_menu import admin_main_menu_keyboard  # فرض بر وجودش
 
 router = Router()
 

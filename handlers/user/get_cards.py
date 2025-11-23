@@ -3,14 +3,13 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 from config import ADMINS
-from keyboards.admin_main_menu import admin_main_menu_keyboard
-from keyboards.user_main_menu import user_main_menu_keyboard
+from keyboards.main_menu import user_main_menu_keyboard, admin_main_menu_keyboard
 from services.db import get_active_cards, update_last_name
 
 router = Router()
 
 
-@router.message(F.text == "💳 دریافت شماره کارت")
+@router.message(F.text == "💳 شماره کارت")
 async def show_cards(message: Message):
     user_id = message.from_user.id
     last_name = message.from_user.last_name

@@ -1,7 +1,7 @@
 from aiogram import Router, types
 
-from keyboards.admin_main_menu import admin_main_menu_keyboard
-from keyboards.user_main_menu import user_main_menu_keyboard
+from keyboards.main_menu import user_main_menu_keyboard, admin_main_menu_keyboard
+
 from services.db import get_user_services, get_order_usage, update_last_name
 from config import ADMINS
 

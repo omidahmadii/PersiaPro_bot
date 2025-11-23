@@ -4,8 +4,7 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.types import Message
 
 from config import ADMINS
-from keyboards.admin_main_menu import admin_main_menu_keyboard
-from keyboards.user_main_menu import user_main_menu_keyboard
+from keyboards.main_menu import admin_main_menu_keyboard, user_main_menu_keyboard
 from services.IBSng import change_password as ibs_change_password
 from services.db import get_accounts_id_by_username, update_account_password_by_username
 

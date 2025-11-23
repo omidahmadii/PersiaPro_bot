@@ -1,8 +1,8 @@
 from aiogram import Router, F
 from aiogram.types import Message
 from config import ADMINS
-from keyboards.admin_main_menu import admin_main_menu_keyboard
-from keyboards.user_main_menu import user_main_menu_keyboard
+from keyboards.main_menu import user_main_menu_keyboard, admin_main_menu_keyboard
+
 router = Router()
 
 

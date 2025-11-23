@@ -1,16 +1,15 @@
 import asyncio
 
 from services.IBSng import get_user_exp_date, get_user_start_date
-from services.activate_reserved_orders import activate_reserved_orders
-from services.activate_waiting_for_payment_orders import activate_waiting_for_payment_orders
-from services.cancel_not_paid_waiting_for_payment_orders import cancel_not_paid_waiting_for_payment_orders
-from services.auto_renew import auto_renew
+from services.scheduler_services.activate_reserved_orders import activate_reserved_orders
+from services.scheduler_services.activate_waiting_for_payment_orders import activate_waiting_for_payment_orders
+from services.scheduler_services.cancel_not_paid_waiting_for_payment_orders import cancel_not_paid_waiting_for_payment_orders
 from services.db import expire_old_orders, archive_old_orders
 from services.db import get_active_orders_without_time, update_order_starts_at, update_order_expires_at
-from services.limit_speed import limit_speed
-from services.membership import check_membership
-from services.notifier import notifier
-from services.usage_logger import log_usage
+from services.scheduler_services.limit_speed import limit_speed
+from services.scheduler_services.membership import check_membership
+from services.scheduler_services.notifier import notifier
+from services.scheduler_services.usage_logger import log_usage
 
 
 async def update_orders_time_from_ibs():

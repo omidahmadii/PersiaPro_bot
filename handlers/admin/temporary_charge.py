@@ -6,7 +6,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 
 from config import ADMINS
-from keyboards.admin_main_menu import admin_main_menu_keyboard
+from keyboards.main_menu import admin_main_menu_keyboard
 from services.IBSng import temporary_charge  # ← همون فانکشنی که گفتی
 
 router = Router()

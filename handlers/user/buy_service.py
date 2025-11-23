@@ -3,15 +3,13 @@
 import asyncio
 import re
 from typing import Optional, List, Dict, Any, Tuple, Union
-
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
-
 from config import ADMINS
 from handlers.user.get_cards import show_cards
-from keyboards.user_main_menu import user_main_menu_keyboard
+from keyboards.main_menu import user_main_menu_keyboard
 from services.IBSng import change_group
 from services.db import (
     ensure_user_exists,
@@ -23,7 +21,7 @@ from services.db import (
     update_user_balance,
     assign_account_to_order,
     get_active_locations_by_category,
-    update_last_name
+    update_last_name, get_active_cards
 )
 
 router = Router()
@@ -406,10 +404,27 @@ async def confirm_and_create(callback: CallbackQuery, state: FSMContext):
     user_balance = get_user_balance(user_id)
     if user_balance < plan["price"]:
         await state.clear()
-        await callback.message.edit_text(
-            f"❌ موجودی کافی نیست.\n💰 قیمت: {format_price(plan['price'])} تومان\n💳 موجودی: {format_price(user_balance)} تومان"
+
+        required_balanace = plan["price"] - user_balance
+        active_cards = get_active_cards()
+        cards_text = ""
+        for card in active_cards:
+            cards_text += (
+                f"🏦 {card['bank_name']} "
+                f"به نام {card['owner_name']}\n"
+                f"<code>\u200F{card['card_number']}</code>\n\n"
+            )
+
+        text_user = (
+            f"❌ موجودی شما کافی نمی باشد.\n"
+            f" سرویس شما در وضعیت در انتظار پرداخت قرار گرفت.\n\n"
+            f"لطفا مبلغ {format_price(required_balanace)} تومان به کارت زیر واریز نموده و تصویر آن را ارسال نمایید.\n\n"
+            f"{cards_text}\n"
+            f"⚠️ پس از تایید مبلغ توسط ادمین سرویس شما فعال خواهد شد."
         )
-        return await show_cards(callback.message, state)
+        return await callback.message.answer(text=text_user, parse_mode="HTML", reply_markup=user_main_menu_keyboard())
+
+
 
     free_account = find_free_account()
     if not free_account:
@@ -556,5 +571,4 @@ async def go_back(callback: CallbackQuery, state: FSMContext):
             )
             return await callback.message.edit_text(text, reply_markup=markup)
 
-    # fallback
     return

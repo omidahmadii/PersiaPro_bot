@@ -15,7 +15,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
 )
 
-from keyboards.user_main_menu import user_main_menu_keyboard
+from keyboards.main_menu import user_main_menu_keyboard
 from services import IBSng
 from services.IBSng import change_group
 from services.admin_notifier import send_message_to_admins

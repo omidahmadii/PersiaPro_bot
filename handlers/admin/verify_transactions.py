@@ -6,7 +6,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
 
 from config import DB_PATH, ADMINS
-from keyboards.admin_main_menu import admin_main_menu_keyboard
+from keyboards.main_menu import admin_main_menu_keyboard
 from services.db import get_user_telegram_id_by_txn_id, get_user_balance
 
 from typing import Optional  # بالای فایل اضافه کن

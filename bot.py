@@ -7,7 +7,7 @@ from aiogram import Dispatcher
 from handlers.admin import verify_transactions, temporary_charge, cards_managment, user_managment, plan_managment, \
     reports,exec_commands
 from handlers.shared import change_password, activate_stored
-from handlers.user import placeholder, feedback, get_cards
+from handlers.user import placeholder, feedback, get_cards, other_features
 from handlers.user import start, buy_service, my_services, account, tutorial, contact_support, payment, renew_service, \
     FAQ, tariffs
 from services.bot_instance import bot
@@ -46,7 +46,7 @@ async def main():
         activate_stored.router,
         exec_commands.router,
         tariffs.router,
-
+        other_features.router,
 
         change_password.router,
         FAQ.router,
