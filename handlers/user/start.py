@@ -1,94 +1,140 @@
 from aiogram import Router, F
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery
+from aiogram.enums import ChatMemberStatus
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import ReplyKeyboardRemove
 
 from config import ADMINS, CHANNEL_ID
 from keyboards.main_menu import user_main_menu_keyboard, admin_main_menu_keyboard
-from services.db import add_user
+from services.db import add_user, update_last_name
 from services.bot_instance import bot
-from services.db import update_last_name
+
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 router = Router()
+
+# =======================
+#  عضویت در کانال
+# =======================
+
+VALID_STATUSES = {
+    ChatMemberStatus.MEMBER,
+    ChatMemberStatus.ADMINISTRATOR,
+    ChatMemberStatus.CREATOR,
+}
 
 
 async def is_user_member(user_id: int) -> bool:
     try:
         member = await bot.get_chat_member(CHANNEL_ID, user_id)
-        return member.status in ['member', 'administrator', 'creator']
+        return member.status in VALID_STATUSES
     except TelegramBadRequest:
         return False
     except Exception as e:
-        print(f"عضویت چک نشد: {e}")
+        print(f"خطا در بررسی عضویت {user_id}: {e}")
         return False
 
 
-@router.message(F.text == "/start")
-async def cmd_start(message: Message):
+def join_channel_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📢 عضویت در کانال",
+                    url="https://t.me/persiapro"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="✅ عضو شدم",
+                    callback_data="check_membership"
+                )
+            ]
+        ]
+    )
+
+
+# =======================
+#  نمایش منوی اصلی
+# =======================
+
+async def show_main_menu(message: Message):
     user = message.from_user
     user_id = user.id
+
     first_name = user.first_name
     last_name = user.last_name
     username = user.username
     role = "admin" if user_id in ADMINS else "user"
 
-    # --- بخش پرینت اطلاعات کاربر (ایمن و بدون خطا) --------------------------
-    # نکته: bio از get_chat می‌آید؛ تاریخ تولد/شماره‌تلفن در تلگرام موجود نیست
-    # مگر کاربر contact بدهد. اگر قبلاً ذخیره کرده‌اید، از دیتابیس بخوانید.
-    try:
-        chat = await bot.get_chat(user_id)  # برای دریافت bio در چت خصوصی
-        bio = getattr(chat, "bio", None)
-    except Exception as e:
-        bio = None
-        print(f"خطا در دریافت bio: {e}")
+    add_user(user_id, first_name, username, role)
 
-    user_info = {
-        "id": user_id,
-        "first_name": user.first_name,
-        "last_name": getattr(user, "last_name", None),
-        "username": username,
-        "language_code": getattr(user, "language_code", None),
-        "is_premium": getattr(user, "is_premium", None),
-        "bio": bio,
-        # تاریخ تولد در Bot API وجود ندارد؛ در آینده اگر از کاربر بگیرید اینجا اضافه کنید
-        "birth_date": None,
-        # شماره‌تلفن هم فقط وقتی هست که کاربر contact بدهد:
-        "phone_number": None,
-    }
     if last_name:
         update_last_name(user_id=user_id, last_name=last_name)
 
-    # ذخیره کاربر در دیتابیس
-    add_user(user_id, first_name, username, role)
-
-    # انتخاب منو بر اساس نقش
     keyboard = admin_main_menu_keyboard() if role == "admin" else user_main_menu_keyboard()
 
-    # ارسال پیام خوش‌آمدگویی و منوی اصلی
     await message.answer(
-        "🌐 به ربات فروش VPN خوش آمدید!\n\n"
-        "✅ آموزش استفاده از ربات:\n\n"
-        "1️⃣ *شارژ حساب*\n"
-        "گزینه «شارژ حساب» رو بزن، مبلغ رو واریز کن.\n\n"
-        "2️⃣ *ارسال فیش*\n"
-        "عکس رسید رو تو ربات بفرست و منتظر تایید باش.\n\n"
-        "3️⃣ *خرید سرویس*\n"
-        "بعد از تایید، «خرید سرویس» رو بزن، پلن رو انتخاب کن.\n"
-        "یوزرنیم و پسورد برات ارسال میشه.\n\n"
-        "4️⃣ *اتصال*\n"
-        "با اطلاعات داده‌شده توی بخش آموزش وصل شو.\n\n"
-        "5️⃣ *پشتیبانی*\n"
-        "هرجا مشکل داشتی می‌تونی با پشتیبانی ارتباط بگیری.\n\n"
-        "👇 حالا یکی از گزینه‌های زیر رو انتخاب کن:",
+        "👋 **خوش اومدی!**\n\n"
+        "به ربات فروش VPN **PersiaPro** خوش آمدی 🌐\n\n"
+        "از منوی زیر می‌تونی:\n"
+        "▫️ حساب شارژ کنی\n"
+        "▫️ سرویس بخری\n"
+        "▫️ فیش ارسال کنی\n"
+        "▫️ با پشتیبانی در ارتباط باشی\n\n"
+        "👇 یکی از گزینه‌ها رو انتخاب کن:",
         reply_markup=keyboard,
         parse_mode="Markdown"
     )
 
-    # بررسی عضویت در کانال
+
+# =======================
+#  /start
+# =======================
+
+@router.message(F.text == "/start")
+async def cmd_start(message: Message):
+    user_id = message.from_user.id
+
     if not await is_user_member(user_id):
-        join_link = "https://t.me/persiapro"  # لینک جوین به کانال
         await message.answer(
-            f"❗️برای تجربه‌ای بهتر لطفا ابتدا در کانال ما عضو شوید.\n\n"
-            f"📢 [عضویت در کانال]({join_link})",
+            "🔒 **دسترسی محدود**\n\n"
+            "برای استفاده از ربات PersiaPro، ابتدا باید عضو کانال رسمی ما بشید.\n\n"
+            "بعد از عضویت، روی دکمه «عضو شدم» بزنید 👇",
+            reply_markup=join_channel_keyboard(),
             parse_mode="Markdown",
             disable_web_page_preview=True
         )
+
+        # 🔥 این خط خیلی مهمه
+        await message.answer(
+            "⬆️ لطفا عضو کانال شوید.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return
+
+    await show_main_menu(message)
+
+
+
+# =======================
+#  دکمه «عضو شدم»
+# =======================
+
+@router.callback_query(F.data == "check_membership")
+async def check_membership_callback(call: CallbackQuery):
+    user_id = call.from_user.id
+
+    if await is_user_member(user_id):
+        await call.message.edit_text(
+            "✅ **عضویت شما تایید شد!**\n\n"
+            "در حال ورود به منوی اصلی ⏳",
+            parse_mode="Markdown"
+        )
+        await show_main_menu(call.message)
+    else:
+        await call.answer(
+            "❌ هنوز عضو کانال نشدید",
+            show_alert=True
+        )
+

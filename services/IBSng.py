@@ -10,7 +10,6 @@ from config import IBS_USERNAME, IBS_PASSWORD, IBS_URL_BASE, IBS_URL_INFO, IBS_U
 def login():
     # Create a session to persist cookies
     session = requests.Session()
-
     # Define the payload for the login form
     payload = {
         'username': IBS_USERNAME,

@@ -1,30 +1,56 @@
 # handlers/user/buy_service.py
 
-import asyncio
 import re
-from typing import Optional, List, Dict, Any, Tuple, Union
+from typing import Optional, List, Dict, Tuple, Union
+
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+
 from config import ADMINS
-from handlers.user.get_cards import show_cards
+from handlers.user.start import is_user_member, join_channel_keyboard
 from keyboards.main_menu import user_main_menu_keyboard
 from services.IBSng import change_group
 from services.db import (
     ensure_user_exists,
     add_user,
-    get_all_plans,
+    get_buy_plans,
     insert_order,
     get_user_balance,
     find_free_account,
     update_user_balance,
     assign_account_to_order,
     get_active_locations_by_category,
-    update_last_name, get_active_cards
+    update_last_name, get_active_cards,
+    count_user_active_orders,
+    get_user_max_active_accounts
 )
 
+active = True
 router = Router()
+
+
+# ------------------------ MemberShip ------------------------ #
+async def membership_guard_message(message: Message) -> bool:
+    if not await is_user_member(message.from_user.id):
+        await message.answer(
+            "🔒 برای استفاده از این بخش باید عضو کانال PersiaPro باشید.",
+            reply_markup=join_channel_keyboard()
+        )
+        return False
+    return True
+
+
+async def membership_guard_callback(callback: CallbackQuery) -> bool:
+    if not await is_user_member(callback.from_user.id):
+        await callback.answer("❌ ابتدا عضو کانال شوید", show_alert=True)
+        await callback.message.answer(
+            "🔒 برای ادامه باید عضو کانال PersiaPro باشید.",
+            reply_markup=join_channel_keyboard()
+        )
+        return False
+    return True
 
 
 # ---------------- plan_picker content merged ---------------- #
@@ -42,6 +68,7 @@ def category_label(category: Optional[str]) -> str:
         "fixed_ip": "📌 آی‌پی ثابت",
         "custom_location": "📍 لوکیشن دلخواه",
         "modem": "📶 مودم/روتر",
+        "special_access": "⚡ دسترسی ویژه",
     }
     return mapping.get(cat, "❓ نامشخص")
 
@@ -87,6 +114,7 @@ def _is_active(plan: Dict) -> bool:
 
 
 CATEGORY_PRIORITY = [
+    "special_access",
     "standard",
     "dual",
     "fixed_ip",
@@ -235,6 +263,30 @@ def make_initial_buy_keyboard(all_plans: List[Dict]) -> Tuple[str, InlineKeyboar
     return "categories", keyboard_categories(categories), None, []
 
 
+def get_min_active_plan_price(plans: List[Dict]) -> int:
+    active_plans = [p for p in plans if _is_active(p)]
+    if not active_plans:
+        return 0
+    try:
+        return min(int(p.get("price", 0) or 0) for p in active_plans)
+    except Exception:
+        return 0
+
+
+def build_plans_price_list(plans: List[Dict]) -> str:
+    active_plans = [p for p in plans if _is_active(p)]
+    if not active_plans:
+        return "در حال حاضر پلن فعالی موجود نیست."
+
+    lines = ["📋 لیست پلن‌های فعال:"]
+    for plan in active_plans:
+        name = plan.get("name", "بدون نام")
+        price = format_price(plan.get("price", 0))
+        lines.append(f"• {name} — {price} تومان")
+
+    return "\n".join(lines)
+
+
 # ---------------- Helpers ---------------- #
 
 async def edit_then_show_main_menu(
@@ -260,19 +312,66 @@ class BuyServiceStates(StatesGroup):
 
 @router.message(F.text == "🛒 خرید سرویس")
 async def start_buy(message: Message, state: FSMContext):
+    if not await membership_guard_message(message):
+        return
+
     user_id = message.from_user.id
     first_name = message.from_user.first_name
     last_name = message.from_user.last_name
     username = message.from_user.username
     role = "admin" if user_id in ADMINS else "user"
+
     if last_name:
         update_last_name(user_id=user_id, last_name=last_name)
 
     if not ensure_user_exists(user_id=user_id):
         add_user(user_id, first_name, username, role)
 
-    all_plans = get_all_plans()
-    kind, markup, only_category, _plans_for_only_category = make_initial_buy_keyboard(all_plans)
+    active_orders_count = count_user_active_orders(user_id)
+    max_active_accounts = get_user_max_active_accounts(user_id)
+
+    if active_orders_count >= max_active_accounts:
+        await state.clear()
+        return await message.answer(
+            "🚫 امکان خرید سرویس جدید برای شما وجود ندارد.\n\n"
+            f"شما هم‌اکنون {active_orders_count} اکانت فعال دارید.\n"
+            f"📌 سقف مجاز خرید برای شما: {max_active_accounts} اکانت\n\n"
+            "برای خرید مجدد، ابتدا باید یکی از اکانت‌های فعال شما آزاد شود.",
+            reply_markup=user_main_menu_keyboard()
+        )
+
+    if not active:
+        await state.clear()
+        return await message.answer(
+            text="در حال حاضر فروش سرویس جدید غیر فعال می باشد.",
+            reply_markup=user_main_menu_keyboard()
+        )
+
+    buy_plans = get_buy_plans()
+    active_plans = [p for p in buy_plans if _is_active(p)]
+
+    if not active_plans:
+        await state.clear()
+        return await message.answer(
+            "در حال حاضر پلن فعالی برای فروش موجود نیست.",
+            reply_markup=user_main_menu_keyboard()
+        )
+
+    user_balance = get_user_balance(user_id)
+    min_price = get_min_active_plan_price(active_plans)
+
+    if user_balance < min_price:
+        await state.clear()
+
+        plans_text = build_plans_price_list(active_plans)
+
+        return await message.answer(
+            "❌ در حال حاضر فروش بسته است.\n\n"
+            f"{plans_text}",
+            reply_markup=user_main_menu_keyboard()
+        )
+
+    kind, markup, only_category, _plans_for_only_category = make_initial_buy_keyboard(active_plans)
 
     if kind == "categories":
         await state.set_state(BuyServiceStates.choosing_category)
@@ -281,10 +380,15 @@ async def start_buy(message: Message, state: FSMContext):
 
     if only_category:
         await state.update_data(category=only_category)
+
     await state.set_state(BuyServiceStates.choosing_duration)
     text = (
-        "مدت زمان سرویس را انتخاب کنید:\n"
-        "ℹ️ این سرویس‌ها دارای «آستانه مصرف منصفانه» هستند؛ با عبور از آستانه، سرویس قطع نمی‌شود."
+        "🛒 مدت زمان سرویس را انتخاب کنید:\n\n"
+        "🚨 توجه قبل از خرید\n"
+        f"حداکثر تعداد اکانت فعال مجاز برای شما: {max_active_accounts} عدد\n"
+        f"📦 تعداد اکانت فعال فعلی شما: {active_orders_count} عدد\n\n"
+        "ℹ️ این سرویس‌ها دارای «آستانه مصرف منصفانه» هستند؛ "
+        "با عبور از آستانه، سرویس قطع نمی‌شود."
     )
     await message.answer(text, reply_markup=markup)
 
@@ -298,11 +402,11 @@ async def choose_category(callback: CallbackQuery, state: FSMContext):
     await state.update_data(category=category)
 
     plans = [
-        p for p in get_all_plans()
+        p for p in get_buy_plans()
         if normalize_category(p.get("category")) == category and _is_active(p)
     ]
 
-    if category in ("standard", "dual", "custom_location", "modem"):
+    if category in ("standard", "dual", "custom_location", "modem", "special_access"):
         await state.set_state(BuyServiceStates.choosing_duration)
         text = (
             "مدت زمان سرویس را انتخاب کنید:\n"
@@ -332,7 +436,7 @@ async def choose_location(callback: CallbackQuery, state: FSMContext):
     await state.update_data(location=location)
 
     plans = [
-        p for p in get_all_plans()
+        p for p in get_buy_plans()
         if p.get("location") == location
            and normalize_category(p.get("category")) == "fixed_ip"
            and _is_active(p)
@@ -351,7 +455,7 @@ async def choose_location(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("buy|duration"))
 async def choose_duration(callback: CallbackQuery, state: FSMContext):
     _, _, plan_id = callback.data.split("|")
-    plans = get_all_plans()
+    plans = get_buy_plans()
     selected_plan = next((p for p in plans if str(p.get("id")) == plan_id), None)
 
     if not selected_plan:
@@ -424,8 +528,6 @@ async def confirm_and_create(callback: CallbackQuery, state: FSMContext):
         )
         return await callback.message.answer(text=text_user, parse_mode="HTML", reply_markup=user_main_menu_keyboard())
 
-
-
     free_account = find_free_account()
     if not free_account:
         await state.clear()
@@ -487,7 +589,7 @@ async def go_back(callback: CallbackQuery, state: FSMContext):
 
     if target == "category":
         # اگر چند دسته داشته‌ایم، دوباره همان لیست را نشان می‌دهیم
-        all_plans = get_all_plans()
+        all_plans = get_buy_plans()
         kind, markup, only_category, _ = make_initial_buy_keyboard(all_plans)
 
         if kind == "categories":
@@ -525,9 +627,9 @@ async def go_back(callback: CallbackQuery, state: FSMContext):
 
         await state.update_data(category=category, location=location)
 
-        if category in ("standard", "dual", "custom_location", "modem"):
+        if category in ("standard", "dual", "custom_location", "modem", "special_access"):
             plans = [
-                p for p in get_all_plans()
+                p for p in get_buy_plans()
                 if normalize_category(p.get("category")) == category and _is_active(p)
             ]
             await state.set_state(BuyServiceStates.choosing_duration)
@@ -539,7 +641,7 @@ async def go_back(callback: CallbackQuery, state: FSMContext):
 
         elif category == "fixed_ip" and location:
             plans = [
-                p for p in get_all_plans()
+                p for p in get_buy_plans()
                 if p.get("location") == location
                    and normalize_category(p.get("category")) == "fixed_ip"
                    and _is_active(p)
@@ -555,7 +657,7 @@ async def go_back(callback: CallbackQuery, state: FSMContext):
             )
 
         # اگر هنوز چیزی پیدا نشد، برگرد به مرحلهٔ اول
-        all_plans = get_all_plans()
+        all_plans = get_buy_plans()
         kind, markup, only_category, _ = make_initial_buy_keyboard(all_plans)
         if kind == "categories":
             await state.set_state(BuyServiceStates.choosing_category)

@@ -207,6 +207,80 @@ def get_all_plans():
         return [dict(row) for row in cursor.fetchall()]
 
 
+def get_buy_plans():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT 
+                id,
+                name,
+                volume_gb,
+                duration_months,
+                duration_days,
+                max_users,
+                price,
+                group_name,
+                category,
+                location
+            FROM plans
+            WHERE visible = 1
+              AND (display_context = 'purchase' OR display_context = 'all')
+            ORDER BY order_priority DESC
+        """)
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def get_renew_plans():
+    """پلن‌هایی که برای تمدید نمایش داده می‌شوند"""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT 
+                id,
+                name,
+                volume_gb,
+                duration_months,
+                duration_days,
+                max_users,
+                price,
+                group_name,
+                category,
+                location
+            FROM plans
+            WHERE visible = 1
+              AND (display_context = 'renew' OR display_context = 'all')
+            ORDER BY order_priority DESC
+        """)
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def get_agent_plans():
+    """پلن‌هایی که برای نماینده‌ها نمایش داده می‌شوند"""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT 
+                id,
+                name,
+                volume_gb,
+                duration_months,
+                duration_days,
+                max_users,
+                price,
+                group_name,
+                category,
+                location
+            FROM plans
+            WHERE visible = 1
+              AND (display_context = 'agent' OR display_context = 'all')
+            ORDER BY order_priority DESC
+        """)
+        return [dict(row) for row in cursor.fetchall()]
+
+
 # Server management
 
 def add_server(location, ip, port, panel_path, api_base_url, v2ray_username, v2ray_password, inbound_id=None,
@@ -276,7 +350,7 @@ def insert_renewed_order_with_auto_renew(user_id, plan_id, username, price, stat
                        INSERT INTO orders (user_id, plan_id, username, price, created_at, status, is_renewal_of_order, volume_gb, auto_renew)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?,?)
                        ''', (
-        user_id, plan_id, username, price, created_at, status, is_renewal_of_order, volume_gb, auto_renew))
+            user_id, plan_id, username, price, created_at, status, is_renewal_of_order, volume_gb, auto_renew))
         order_id = cursor.lastrowid  # گرفتن آیدی آخرین ردیف واردشده
         conn.commit()
         return order_id
@@ -512,6 +586,37 @@ def expire_old_orders():
     conn.close()
 
 
+def expire_old_order_usages():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    now = jdatetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute("""
+        SELECT id, expires_at FROM order_usages
+        WHERE status = 'active' AND expires_at IS NOT NULL
+    """)
+    rows = cursor.fetchall()
+
+    for row in rows:
+        try:
+            expires_at_str = row['expires_at']  # مثلاً: "1403-04-16 09:05"
+            expires_at = jdatetime.datetime.strptime(expires_at_str, "%Y-%m-%d %H:%M")
+            now_jdt = jdatetime.datetime.strptime(now, "%Y-%m-%d %H:%M:%S")
+
+            if expires_at < now_jdt:
+                cursor.execute("""
+                    UPDATE order_usages
+                    SET status = 'expired'
+                    WHERE id = ?
+                """, (row['id'],))
+        except Exception as e:
+            print(f"خطا در بررسی سفارش {row['id']}: {e}")
+
+    conn.commit()
+    conn.close()
+
+
 def archive_old_orders():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -532,10 +637,50 @@ def archive_old_orders():
             thirty_days_ago_jdt = now_jdt - jdatetime.timedelta(days=45)
             if expires_at < thirty_days_ago_jdt:
                 cursor.execute("""
-                    UPDATE orders
-                    SET status = 'archived'
-                    WHERE id = ?
+                UPDATE orders
+                SET status = 'archived'
+                WHERE id = ?
                 """, (row['id'],))
+
+                cursor.execute("""
+                    UPDATE order_usages
+                    SET status = 'archived'
+                    WHERE order_id = ?
+                    """, (row['id'],))
+
+        except Exception as e:
+            print(f"خطا در بررسی سفارش {row['id']}: {e}")
+
+    conn.commit()
+    conn.close()
+
+
+def archive_old_order_usages():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    now = jdatetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute("""
+        SELECT id, expires_at FROM order_usages
+        WHERE status = 'expired' or status = 'renewed'
+    """)
+    rows = cursor.fetchall()
+
+    for row in rows:
+        try:
+            expires_at_str = row['expires_at']  # مثلاً: "1403-04-16 09:05"
+            expires_at = jdatetime.datetime.strptime(expires_at_str, "%Y-%m-%d %H:%M")
+            now_jdt = jdatetime.datetime.strptime(now, "%Y-%m-%d %H:%M:%S")
+            thirty_days_ago_jdt = now_jdt - jdatetime.timedelta(days=45)
+            if expires_at < thirty_days_ago_jdt:
+                cursor.execute("""
+                UPDATE order_usages
+                SET status = 'archived'
+                WHERE id = ?
+                """, (row['id'],))
+
+
         except Exception as e:
             print(f"خطا در بررسی سفارش {row['id']}: {e}")
 
@@ -738,7 +883,7 @@ def get_active_locations_by_category(category: str):
         cursor.execute("""
             SELECT DISTINCT location 
             FROM plans 
-            WHERE category = ? AND visible = 1 AND location IS NOT NULL
+            WHERE category = ? AND visible = 1 AND location IS NOT NULL ORDER BY order_priority
         """, (category,))
         return [row["location"] for row in cursor.fetchall()]
 
@@ -845,3 +990,45 @@ def get_user_message_name(user_id: int):
         cur.execute("SELECT message_name FROM users WHERE id = ?", (user_id,))
         row = cur.fetchone()
         return row[0] if row else None
+
+
+def count_user_active_orders(user_id: int) -> int:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT COUNT(*) AS cnt
+        FROM orders
+        WHERE user_id = ?
+          AND status = 'active'
+    """, (user_id,))
+
+    row = cur.fetchone()
+    conn.close()
+    return int(row["cnt"] or 0)
+
+
+def get_user_max_active_accounts(user_id: int) -> int:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT max_active_accounts
+        FROM users
+        WHERE id = ?
+        LIMIT 1
+    """, (user_id,))
+
+    row = cur.fetchone()
+    conn.close()
+
+    if not row:
+        return 3
+
+    try:
+        value = int(row["max_active_accounts"] or 3)
+        return value if value > 0 else 3
+    except Exception:
+        return 3

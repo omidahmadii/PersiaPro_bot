@@ -3,17 +3,20 @@ import asyncio
 from services.IBSng import get_user_exp_date, get_user_start_date
 from services.scheduler_services.activate_reserved_orders import activate_reserved_orders
 from services.scheduler_services.activate_waiting_for_payment_orders import activate_waiting_for_payment_orders
-from services.scheduler_services.cancel_not_paid_waiting_for_payment_orders import cancel_not_paid_waiting_for_payment_orders
-from services.db import expire_old_orders, archive_old_orders
+from services.scheduler_services.cancel_not_paid_waiting_for_payment_orders import \
+    cancel_not_paid_waiting_for_payment_orders
+from services.db import expire_old_orders, archive_old_orders, expire_old_order_usages, archive_old_order_usages
 from services.db import get_active_orders_without_time, update_order_starts_at, update_order_expires_at
 from services.scheduler_services.limit_speed import limit_speed
 from services.scheduler_services.membership import check_membership
 from services.scheduler_services.notifier import notifier
 from services.scheduler_services.usage_logger import log_usage
+from services.scheduler_services.auto_renew import auto_renew
 
 
 async def update_orders_time_from_ibs():
     while True:
+        print("update times started")
         orders = get_active_orders_without_time()
         for order in orders:
             try:
@@ -38,8 +41,11 @@ async def expire_orders_loop():
         try:
             await asyncio.to_thread(expire_old_orders)
             await asyncio.to_thread(archive_old_orders)
+            await asyncio.to_thread(expire_old_order_usages)
+            await asyncio.to_thread(archive_old_order_usages)
         except Exception as e:
             print(f"خطا در expire کردن سفارش‌ها: {e}")
+        print("Expire orders loop finished.")
 
 
 async def activate_reserved_orders_loop():
@@ -64,6 +70,7 @@ async def notifier_loop():
 async def log_usage_loop():
     while True:
         try:
+            print("Log Usage Loop Starded")
             await asyncio.to_thread(log_usage)
         except Exception as e:
             print(f"خطا در ثبت مصرف کاربر: {e}")
@@ -110,12 +117,11 @@ async def cancel_not_paid_waiting_for_payment_orders_loop():
         await asyncio.sleep(60)
 
 
-
 async def auto_renew_loop():
     while True:
         try:
-            pass
-            # await asyncio.to_thread(auto_renew)
+            # pass
+            await asyncio.to_thread(auto_renew)
         except Exception as e:
             print(f"خطا در اجرای تمدید خودکار: {e}")
         print("َAuto renew loop finished.")
@@ -124,15 +130,15 @@ async def auto_renew_loop():
 
 async def scheduler():
     await asyncio.gather(
-        # update_orders_time_from_ibs(),
-        # notifier_loop(),
-        # activate_reserved_orders_loop(),
-        # expire_orders_loop(),
+        update_orders_time_from_ibs(),
+        #notifier_loop(),
+        #activate_reserved_orders_loop(),
+        #expire_orders_loop(),
         # log_usage_loop(),
-        # check_membership_loop(),
+        #check_membership_loop(),
         # limit_speed_loop(),
-        # activate_waiting_for_payment_orders_loop(),
-        # cancel_not_paid_waiting_for_payment_orders_loop(),
-        # auto_renew_loop()
+        #activate_waiting_for_payment_orders_loop(),
+        #cancel_not_paid_waiting_for_payment_orders_loop(),
+        #auto_renew_loop()
 
     )

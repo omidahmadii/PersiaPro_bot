@@ -23,11 +23,11 @@ PAGE_SIZE = 10
 
 # ----------------------
 
-# --- بررسی وجود ستون (مثلاً last_name) در جدول users ---
+# --- بررسی وجود ستون در جدول users ---
 def column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
     cur = conn.cursor()
     cur.execute("PRAGMA table_info(%s)" % table)
-    cols = [r[1] for r in cur.fetchall()]  # name در ردیف 1
+    cols = [r[1] for r in cur.fetchall()]
     return column in cols
 
 
@@ -38,8 +38,8 @@ def _connect():
 
 def get_users(offset: int = 0, limit: int = PAGE_SIZE) -> List[Tuple]:
     """
-    بازمی‌گرداند لیست کاربران: id, first_name, [last_name?], username, role, balance
-    (آخرین ستون‌ها اگر موجود باشند)
+    بازمی‌گرداند لیست کاربران:
+    id, first_name, [last_name?], username, role, balance
     """
     conn = _connect()
     has_last = column_exists(conn, "users", "last_name")
@@ -52,7 +52,6 @@ def get_users(offset: int = 0, limit: int = PAGE_SIZE) -> List[Tuple]:
             LIMIT ? OFFSET ?
         """, (limit, offset))
     else:
-        # last_name را با '' جایگزین می‌کنیم تا کار با نمایش راحت شود
         cur.execute("""
             SELECT id, first_name, '' as last_name, username, role, balance
             FROM users
@@ -98,12 +97,24 @@ def search_users(keyword: str, limit: int = 20) -> List[Tuple]:
 def get_user(user_id: int) -> Optional[Tuple]:
     conn = _connect()
     has_last = column_exists(conn, "users", "last_name")
+    has_max_accounts = column_exists(conn, "users", "max_active_accounts")
     cur = conn.cursor()
+
+    max_col = "max_active_accounts" if has_max_accounts else "3 as max_active_accounts"
+
     if has_last:
-        cur.execute("SELECT id, first_name, last_name, username, role, balance FROM users WHERE id = ?", (user_id,))
+        cur.execute(f"""
+            SELECT id, first_name, last_name, username, role, balance, {max_col}
+            FROM users
+            WHERE id = ?
+        """, (user_id,))
     else:
-        cur.execute("SELECT id, first_name, '' as last_name, username, role, balance FROM users WHERE id = ?",
-                    (user_id,))
+        cur.execute(f"""
+            SELECT id, first_name, '' as last_name, username, role, balance, {max_col}
+            FROM users
+            WHERE id = ?
+        """, (user_id,))
+
     row = cur.fetchone()
     conn.close()
     return row
@@ -118,7 +129,7 @@ def update_user_field(user_id: int, field: str, value) -> bool:
     try:
         cur.execute(f"UPDATE users SET {field} = ? WHERE id = ?", (value, user_id))
         conn.commit()
-    except Exception as e:
+    except Exception:
         conn.close()
         return False
     conn.close()
@@ -134,16 +145,41 @@ def update_user_role(user_id: int, role_value: str) -> bool:
 def update_user_balance(user_id: int, balance_value: int) -> bool:
     try:
         balance_value = int(balance_value)
-    except:
+    except Exception:
         return False
     return update_user_field(user_id, "balance", balance_value)
 
 
+def update_user_max_active_accounts(user_id: int, max_value: int) -> bool:
+    try:
+        max_value = int(max_value)
+        if max_value < 0:
+            return False
+    except Exception:
+        return False
+
+    conn = _connect()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE users SET max_active_accounts = ? WHERE id = ?",
+            (max_value, user_id)
+        )
+        conn.commit()
+    except Exception:
+        conn.close()
+        return False
+
+    conn.close()
+    return True
+
+
 # --- FSM states ---
 class UserStates(StatesGroup):
-    waiting_for_action = State()  # وقتی که کاربر انتخاب شد
-    waiting_for_balance = State()  # منتظر مقدار جدید بالانس
-    waiting_for_search = State()  # منتظر عبارت جستجو
+    waiting_for_action = State()
+    waiting_for_balance = State()
+    waiting_for_search = State()
+    waiting_for_max_active_accounts = State()
 
 
 # --- admin check ---
@@ -163,7 +199,7 @@ def format_username(username: Optional[str], width: int = USERNAME_COL_WIDTH) ->
     uname = (username or "-")
     if len(uname) > width - 1:
         uname = uname[:width - 1] + "…"
-    return ("@" + uname).ljust(width + 1)  # +1 برای @
+    return ("@" + uname).ljust(width + 1)
 
 
 def format_id(idv: int, width: int = ID_COL_WIDTH) -> str:
@@ -186,9 +222,7 @@ def format_user_button_text(row: Tuple) -> str:
         format_name(first or "", last or ""),
         format_username(username),
         format_balance(balance),
-
     ]
-    # جداکننده عمودی کوچک برای خوانایی
     return " ".join(parts)
 
 
@@ -198,7 +232,6 @@ def build_users_list_keyboard(rows: List[Tuple], page: int) -> InlineKeyboardMar
     for r in rows:
         uid = r[0]
         text = format_user_button_text(r)
-        # callback فقط انتخاب کاربر
         keyboard_rows.append([InlineKeyboardButton(text=text, callback_data=f"user_select:{uid}")])
 
     nav_buttons = []
@@ -209,7 +242,6 @@ def build_users_list_keyboard(rows: List[Tuple], page: int) -> InlineKeyboardMar
     if nav_buttons:
         keyboard_rows.append(nav_buttons)
 
-    # جستجو و بازگشت
     keyboard_rows.append([InlineKeyboardButton(text="🔍 جستجو کاربر", callback_data="user_search")])
     keyboard_rows.append([InlineKeyboardButton(text="🔙 بازگشت به منوی اصلی", callback_data="user_back_main")])
     return InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
@@ -220,7 +252,6 @@ async def show_users_list_message(msg_or_cb, page: int = 0):
     offset = page * PAGE_SIZE
     users = get_users(offset=offset, limit=PAGE_SIZE)
     if not users:
-        # اگر صفحه اول خالیه، پیام متفاوت
         text = "🚫 هیچ کاربری یافت نشد."
         if isinstance(msg_or_cb, Message):
             await msg_or_cb.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -238,11 +269,9 @@ async def show_users_list_message(msg_or_cb, page: int = 0):
     if isinstance(msg_or_cb, Message):
         await msg_or_cb.answer(text, reply_markup=kb)
     else:
-        # CallbackQuery
         try:
             await msg_or_cb.message.edit_text(text, reply_markup=kb)
-        except:
-            # اگر edit موفق نبود، ارسال پیام جدید
+        except Exception:
             await msg_or_cb.message.answer(text, reply_markup=kb)
         await msg_or_cb.answer()
 
@@ -294,12 +323,10 @@ async def user_search_receive(msg: Message, state: FSMContext):
     await state.clear()
     if not results:
         await msg.answer("❌ نتیجه‌ای یافت نشد.")
-        # بازگشت به صفحه اول لیست
         return await show_users_list_message(msg, page=0)
 
     text = f"🔎 نتایج جستجو برای: `{keyword}`"
     kb = build_users_list_keyboard(results, page=0)
-    # ارسال نتایج
     await msg.answer(text, reply_markup=kb)
 
 
@@ -308,37 +335,37 @@ async def user_search_receive(msg: Message, state: FSMContext):
 async def user_selected(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id):
         return await cb.answer("دسترسی نداری.", show_alert=True)
+
     uid = int(cb.data.split(":")[1])
     row = get_user(uid)
     if not row:
         return await cb.answer("کاربر پیدا نشد.", show_alert=True)
 
-    # row = (id, first_name, last_name, username, role, balance)
-    uid, first, last, username, role, balance = row
+    uid, first, last, username, role, balance, max_active_accounts = row
     display_name = (first or "") + ((" " + last) if last else "")
     caption = (
         f"👤 کاربر #{uid}\n"
         f"نام: {display_name or '-'}\n"
         f"یوزرنیم: @{username or '-'}\n"
         f"بالانس: {balance or 0}\n"
-        f"نقش: {role or '-'}"  # نمایش نقش در متن مشکلی نداره؛ فقط توی لیست/دکمه‌ها حذف شده
+        f"نقش: {role or '-'}\n"
+        f"سقف اکانت فعال: {max_active_accounts or 3}"
     )
 
-    # دکمه‌ها: تغییر بالانس / تغییر نقش / بازگشت
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💰 تغییر بالانس", callback_data=f"user_balance_edit:{uid}")],
+        [InlineKeyboardButton(text="🔢 تغییر سقف اکانت", callback_data=f"user_max_accounts_edit:{uid}")],
         [InlineKeyboardButton(text="🎭 تغییر نقش", callback_data=f"user_role_menu:{uid}")],
         [InlineKeyboardButton(text="🔙 بازگشت به لیست", callback_data="user_page:0")]
     ])
 
     await state.update_data(user_id=uid)
-    # برای اینجا از ارسال پیام جدید استفاده می‌کنیم تا پیام قبلی لیست پایدار بمونه
     await cb.message.answer(caption, reply_markup=keyboard)
     await state.set_state(UserStates.waiting_for_action)
     await cb.answer()
 
 
-# --- شروع ویرایش بالانس (callback) ---
+# --- شروع ویرایش بالانس ---
 @router.callback_query(F.data.startswith("user_balance_edit:"))
 async def user_balance_edit_start(cb: CallbackQuery, state: FSMContext):
     if not is_admin(cb.from_user.id):
@@ -363,7 +390,7 @@ async def user_receive_new_balance(msg: Message, state: FSMContext):
     value_text = msg.text.strip()
     try:
         value = int(value_text)
-    except:
+    except Exception:
         return await msg.answer("بالانس باید یک عدد صحیح باشد. لطفاً دوباره عدد بفرستید.")
     ok = update_user_balance(uid, value)
     if ok:
@@ -371,11 +398,57 @@ async def user_receive_new_balance(msg: Message, state: FSMContext):
     else:
         await msg.answer("❌ خطا در بروزرسانی بالانس.")
     await state.clear()
-    # بعد از تغییر دوباره صفحه اول لیست رو نشان میدیم
     await show_users_list_message(msg, page=0)
 
 
-# --- منوی تغییر نقش (۳ دکمه ثابت) ---
+# --- شروع ویرایش سقف اکانت فعال ---
+@router.callback_query(F.data.startswith("user_max_accounts_edit:"))
+async def user_max_accounts_edit_start(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer("دسترسی نداری.", show_alert=True)
+
+    uid = int(cb.data.split(":")[1])
+    await state.update_data(edit_user_id=uid)
+
+    await cb.message.answer(
+        "🔢 لطفاً سقف جدید اکانت فعال این کاربر را ارسال کنید:\n"
+        "مثال: 3 یا 10"
+    )
+    await state.set_state(UserStates.waiting_for_max_active_accounts)
+    await cb.answer()
+
+
+@router.message(UserStates.waiting_for_max_active_accounts)
+async def user_receive_new_max_active_accounts(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        await state.clear()
+        return await msg.reply("دسترسی نداری 😅")
+
+    data = await state.get_data()
+    uid = data.get("edit_user_id")
+    if not uid:
+        await state.clear()
+        return await msg.reply("خطای وضعیت. لطفاً دوباره تلاش کنید.")
+
+    value_text = msg.text.strip()
+    try:
+        value = int(value_text)
+        if value < 0:
+            return await msg.answer("❌ مقدار سقف باید صفر یا بیشتر باشد.")
+    except Exception:
+        return await msg.answer("❌ لطفاً یک عدد صحیح معتبر ارسال کنید.")
+
+    ok = update_user_max_active_accounts(uid, value)
+    if ok:
+        await msg.answer(f"✅ سقف اکانت فعال کاربر #{uid} به {value} تغییر کرد.")
+    else:
+        await msg.answer("❌ خطا در بروزرسانی سقف اکانت فعال.")
+
+    await state.clear()
+    await show_users_list_message(msg, page=0)
+
+
+# --- منوی تغییر نقش ---
 @router.callback_query(F.data.startswith("user_role_menu:"))
 async def user_role_menu(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
@@ -385,7 +458,7 @@ async def user_role_menu(cb: CallbackQuery):
         [InlineKeyboardButton(text="🔐 ادمین", callback_data=f"user_role_set:{uid}:admin")],
         [InlineKeyboardButton(text="👤 یوزر", callback_data=f"user_role_set:{uid}:user")],
         [InlineKeyboardButton(text="🤝 نماینده", callback_data=f"user_role_set:{uid}:agent")],
-        [InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"user_page:0")]
+        [InlineKeyboardButton(text="🔙 بازگشت", callback_data="user_page:0")]
     ])
     await cb.message.answer("🎯 نقش جدید را انتخاب کنید:", reply_markup=kb)
     await cb.answer()
@@ -405,25 +478,23 @@ async def user_role_set(cb: CallbackQuery):
     ok = update_user_role(uid, new_role)
     if ok:
         await cb.answer(f"✅ نقش کاربر #{uid} به `{new_role}` تغییر کرد.")
-        # می‌تونیم پیام خلاصه ارسال کنیم
         await cb.message.answer(f"کاربر #{uid} با موفقیت به نقش `{new_role}` تغییر پیدا کرد.")
     else:
         await cb.answer("❌ خطا در تغییر نقش.", show_alert=True)
 
 
-# --- فرمان سریع ویرایش بالانس (اختیاری) ---
+# --- فرمان سریع ویرایش بالانس ---
 @router.message(F.text.startswith("/edit_user_balance"))
 async def quick_edit_balance(msg: Message):
     if not is_admin(msg.from_user.id):
         return await msg.reply("دسترسی نداری 😅")
     parts = msg.text.split()
-    # فرمت: /edit_user_balance <id> <balance>
     if len(parts) < 3:
         return await msg.reply("فرمت: /edit_user_balance <id> <balance>")
     try:
         uid = int(parts[1])
         bal = int(parts[2])
-    except:
+    except Exception:
         return await msg.reply("فرمت صحیح نیست. id و balance باید عدد باشند.")
     ok = update_user_balance(uid, bal)
     if ok:
@@ -432,18 +503,17 @@ async def quick_edit_balance(msg: Message):
         await msg.reply("❌ خطا در بروزرسانی.")
 
 
-# --- command quick role set (اختیاری) ---
+# --- فرمان سریع تغییر نقش ---
 @router.message(F.text.startswith("/set_user_role"))
 async def quick_set_role(msg: Message):
     if not is_admin(msg.from_user.id):
         return await msg.reply("دسترسی نداری 😅")
     parts = msg.text.split()
-    # فرمت: /set_user_role <id> <admin|user|agent>
     if len(parts) < 3:
         return await msg.reply("فرمت: /set_user_role <id> <admin|user|agent>")
     try:
         uid = int(parts[1])
-    except:
+    except Exception:
         return await msg.reply("id نامعتبر.")
     rolev = parts[2].lower()
     if rolev not in ("admin", "user", "agent"):

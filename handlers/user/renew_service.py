@@ -15,12 +15,14 @@ from aiogram.types import (
     InlineKeyboardMarkup,
 )
 
+from handlers.user.start import is_user_member, join_channel_keyboard
 from keyboards.main_menu import user_main_menu_keyboard
 from services import IBSng
 from services.IBSng import change_group
 from services.admin_notifier import send_message_to_admins
+from services.db import get_active_cards
 from services.db import (
-    get_all_plans,
+    get_renew_plans,
     get_user_balance,
     update_user_balance,
     get_services_for_renew,
@@ -30,9 +32,31 @@ from services.db import (
     get_order_status,
     update_last_name,
 )
-from services.db import get_active_cards
 
 router = Router()
+
+
+# ------------------------ MemberShip ------------------------ #
+
+async def membership_guard_message(message: Message) -> bool:
+    if not await is_user_member(message.from_user.id):
+        await message.answer(
+            "🔒 برای استفاده از این بخش باید عضو کانال PersiaPro باشید.",
+            reply_markup=join_channel_keyboard()
+        )
+        return False
+    return True
+
+
+async def membership_guard_callback(callback: CallbackQuery) -> bool:
+    if not await is_user_member(callback.from_user.id):
+        await callback.answer("❌ ابتدا عضو کانال شوید", show_alert=True)
+        await callback.message.answer(
+            "🔒 برای ادامه باید عضو کانال PersiaPro باشید.",
+            reply_markup=join_channel_keyboard()
+        )
+        return False
+    return True
 
 
 # ---------------- plan_picker (merged & adapted for renew) ---------------- #
@@ -50,6 +74,7 @@ def category_label(category: Optional[str]) -> str:
         "fixed_ip": "📌 آی‌پی ثابت",
         "custom_location": "📍 لوکیشن دلخواه",
         "modem": "📶 مودم/روتر",
+        "special_access": "⚡ دسترسی ویژه",
     }
     return mapping.get(cat, "❓ نامشخص")
 
@@ -95,6 +120,7 @@ def _is_active(plan: Dict) -> bool:
 
 
 CATEGORY_PRIORITY = [
+    "special_access",
     "standard",
     "dual",
     "fixed_ip",
@@ -271,6 +297,8 @@ def kb_services_inline(services: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
 # ---------------- Step 0: Entry ---------------- #
 @router.message(F.text == "📄 تمدید سرویس")
 async def renew_start(message: Message, state: FSMContext):
+    if not await membership_guard_message(message):
+        return
     user_id = message.from_user.id
     services = get_services_for_renew(user_id)
 
@@ -303,8 +331,8 @@ async def renew_choose_service(callback: CallbackQuery, state: FSMContext):
 
     await state.update_data(selected_service=selected_service)
 
-    all_plans = get_all_plans()
-    kind, markup, only_category, plans_for_only_category = make_initial_renew_keyboard(all_plans)
+    renew_plans = get_renew_plans()
+    kind, markup, only_category, plans_for_only_category = make_initial_renew_keyboard(renew_plans)
 
     if kind == "plans" and only_category == "fixed_ip":
         await state.update_data(category="fixed_ip")
@@ -340,9 +368,9 @@ async def renew_choose_category(callback: CallbackQuery, state: FSMContext):
     category = normalize_category(category)
     await state.update_data(category=category)
 
-    if category in ("standard", "dual", "custom_location", "modem"):
+    if category in ("standard", "dual", "custom_location", "modem", "special_access"):
         plans = [
-            p for p in get_all_plans()
+            p for p in get_renew_plans()
             if normalize_category(p.get("category")) == category and _is_active(p)
         ]
         await state.set_state(RenewStates.choosing_plan)
@@ -373,7 +401,7 @@ async def renew_choose_location(callback: CallbackQuery, state: FSMContext):
     await state.update_data(location=location)
 
     plans = [
-        p for p in get_all_plans()
+        p for p in get_renew_plans()
         if p.get("location") == location and normalize_category(p.get("category")) == "fixed_ip" and _is_active(p)
     ]
     if not plans:
@@ -395,7 +423,7 @@ async def renew_choose_location(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data.startswith("renew|plan"))
 async def renew_choose_plan(callback: CallbackQuery, state: FSMContext):
     _, _, plan_id = callback.data.split("|")
-    plans = get_all_plans()
+    plans = get_renew_plans()
     selected_plan = next((p for p in plans if str(p.get("id")) == plan_id), None)
     if not selected_plan:
         return await callback.answer("پلن معتبر نیست.", show_alert=True)
@@ -586,7 +614,7 @@ async def renew_go_back(callback: CallbackQuery, state: FSMContext):
         )
 
     if target == "category":
-        all_plans = get_all_plans()
+        all_plans = get_renew_plans()
         kind, markup, only_category, _ = make_initial_renew_keyboard(all_plans)
         if kind == "categories":
             await state.set_state(RenewStates.choosing_category)
@@ -635,9 +663,9 @@ async def renew_go_back(callback: CallbackQuery, state: FSMContext):
             location = plan.get("location")
             await state.update_data(location=location)
 
-        if category in ("standard", "dual", "custom_location", "modem"):
+        if category in ("standard", "dual", "custom_location", "modem", "special_access"):
             plans = [
-                p for p in get_all_plans()
+                p for p in get_renew_plans()
                 if normalize_category(p.get("category")) == category and _is_active(p)
             ]
             await state.set_state(RenewStates.choosing_plan)
@@ -649,7 +677,7 @@ async def renew_go_back(callback: CallbackQuery, state: FSMContext):
 
         elif category == "fixed_ip" and location:
             plans = [
-                p for p in get_all_plans()
+                p for p in get_renew_plans()
                 if
                 p.get("location") == location and normalize_category(p.get("category")) == "fixed_ip" and _is_active(p)
             ]
@@ -662,7 +690,7 @@ async def renew_go_back(callback: CallbackQuery, state: FSMContext):
                                                                                           prefix="renew"))
 
         # fallback به ورودی
-        all_plans = get_all_plans()
+        all_plans = get_renew_plans()
         kind, markup, only_category, _ = make_initial_renew_keyboard(all_plans)
         if kind == "categories":
             await state.set_state(RenewStates.choosing_category)

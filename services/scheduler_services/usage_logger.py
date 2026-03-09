@@ -1,4 +1,5 @@
 import sqlite3
+import time
 from datetime import datetime, timedelta
 import jdatetime
 
@@ -6,97 +7,117 @@ from config import DB_PATH
 from services.IBSng import get_usage_from_ibs
 
 
-def sync_orders_to_usages():
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
+UPDATE_INTERVAL_HOURS = 6
+REQUEST_DELAY_SECONDS = 1
+DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+JALALI_MINUTE_FORMAT = "%Y-%m-%d %H:%M"
 
-    # تمام سفارش‌ها
-    cur.execute("SELECT id, username, plan_id, starts_at, expires_at, volume_gb, extra_volume_gb  FROM orders")
-    orders = cur.fetchall()
 
-    for order_id, username, plan_id, starts_at, expires_at, volume_gb, extra_volume_gb in orders:
+def parse_jalali_datetime(dt_str: str):
+    return jdatetime.datetime.strptime(dt_str, DATETIME_FORMAT).togregorian()
 
-        # چک کن آیا رکورد در order_usages وجود دارد
-        cur.execute("SELECT id, starts_at, expires_at FROM order_usages WHERE order_id = ?", (order_id,))
-        usage = cur.fetchone()
-        if not usage:
-            limit_mb = ((volume_gb or 0) + (extra_volume_gb or 0)) * 1024
-            # اگه نیست → ایجادش کن
-            cur.execute("""
-                INSERT INTO order_usages (order_id, username, plan_id, starts_at, expires_at, last_update, sent_mb, received_mb, total_mb, applied_speed, limit_mb)
-                VALUES (?, ?, ?, ?, ?, NULL, 0, 0, 0, NULL, ?)
-            """, (
-                order_id,
-                username,
-                plan_id,
-                starts_at,
-                expires_at,
-                limit_mb
-            ))
-            print(f"[+] Usage record created for order_id={order_id}")
 
-        else:
-            usage_id, u_starts_at, u_expires_at = usage
+def parse_jalali_datetime_flexible(dt_str: str):
+    """
+    برای اینکه هم فرمت ثانیه‌دار را بخواند هم فرمت قدیمی بدون ثانیه را
+    """
+    try:
+        return jdatetime.datetime.strptime(dt_str, DATETIME_FORMAT).togregorian()
+    except ValueError:
+        return jdatetime.datetime.strptime(dt_str, JALALI_MINUTE_FORMAT).togregorian()
 
-            # اگر starts_at یا expires_at توی order_usages خالیه و توی orders مقدار داره → آپدیت کن
-            if (not u_starts_at and starts_at) or (not u_expires_at and expires_at):
-                cur.execute("""
-                    UPDATE order_usages
-                    SET starts_at = ?, expires_at = ?
-                    WHERE id = ?
-                """, (starts_at, expires_at, usage_id))
-                print(f"[~] Usage record updated with new dates for order_id={order_id}")
 
-        conn.commit()
-    conn.close()
+def get_now_local_jalali_str():
+    """
+    زمان فعلی سیستم را به جلالی برمی‌گرداند
+    مثال: 1404-12-18 03:19:45
+    """
+    now_local = datetime.now()
+    jalali_now = jdatetime.datetime.fromgregorian(datetime=now_local)
+    return jalali_now.strftime(DATETIME_FORMAT)
 
 
 def update_usages():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
 
-    cur.execute("SELECT id, order_id, username, plan_id, starts_at, expires_at, last_update FROM order_usages order by last_update , expires_at desc")
-    usages = cur.fetchall()
+    cur.execute("""
+        SELECT
+            id,
+            username,
+            starts_at,
+            expires_at,
+            usage_last_update
+        FROM orders
+        WHERE status = 'active'
+        ORDER BY
+            CASE WHEN usage_last_update IS NULL THEN 0 ELSE 1 END,
+            expires_at ASC
+        LIMIT 100
+    """)
+    orders = cur.fetchall()
 
     now = datetime.now()
 
-    for usage_id, order_id, username, plan_id, starts_at, expires_at, last_update in usages:
-        # تاریخ پایان (تبدیل از شمسی به میلادی)
+    for order_id, username, starts_at, expires_at, usage_last_update in orders:
+        if not username:
+            print(f"[!] order_id={order_id} has no username")
+            continue
+
+        if not starts_at or not expires_at:
+            print(f"[!] order_id={order_id} missing starts_at/expires_at")
+            continue
+
         try:
-            exp_dt = jdatetime.datetime.strptime(expires_at, "%Y-%m-%d %H:%M").togregorian()
+            exp_dt = parse_jalali_datetime_flexible(expires_at)
         except Exception as e:
+            print(f"[!] invalid expires_at for order_id={order_id}: {expires_at} | {e}")
             continue
 
-        # اگر سرویس منقضی شده و حداقل یکبار آپدیت شده → دیگه لازم نیست
-        if exp_dt < now and last_update is not None:
+        # اگر سرویس منقضی شده و قبلا یکبار آپدیت شده، دیگر سراغش نرو
+        if exp_dt < now and usage_last_update is not None:
             continue
 
-        # بررسی فاصله ۱۲ ساعته برای سرویس‌های فعال
-        if last_update:
-            last_update_dt = datetime.fromisoformat(last_update)
-            if now - last_update_dt < timedelta(hours=12):
-                continue
+        if usage_last_update:
+            try:
+                last_update_dt = parse_jalali_datetime_flexible(usage_last_update)
+                if now - last_update_dt < timedelta(hours=UPDATE_INTERVAL_HOURS):
+                    continue
+            except Exception as e:
+                print(f"[!] invalid usage_last_update for order_id={order_id}: {usage_last_update} | {e}")
+                # اگر فرمت خراب بود، می‌گذاریم دوباره آپدیت شود
 
-        # گرفتن مصرف از IBSng
-        sent_mb, recv_mb = get_usage_from_ibs(username, starts_at, expires_at)
-        total_mb = sent_mb + recv_mb
+        try:
+            sent_mb, recv_mb = get_usage_from_ibs(username, starts_at, expires_at)
+            sent_mb = sent_mb or 0
+            recv_mb = recv_mb or 0
+            total_mb = sent_mb + recv_mb
+        except Exception as e:
+            print(f"[!] IBS error for order_id={order_id}, username={username}: {e}")
+            continue
 
         cur.execute("""
-            UPDATE order_usages
-            SET sent_mb = ?, received_mb = ?, total_mb = ?, last_update = ?
+            UPDATE orders
+            SET
+                usage_sent_mb = ?,
+                usage_received_mb = ?,
+                usage_total_mb = ?,
+                usage_last_update = ?
             WHERE id = ?
         """, (
             sent_mb,
             recv_mb,
             total_mb,
-            datetime.utcnow().isoformat(),
-            usage_id
+            get_now_local_jalali_str(),
+            order_id
         ))
-        # print(f"[+] Usage updated for order_id={order_id}")
+
         conn.commit()
+        print(f"[+] usage updated for order_id={order_id}")
+        time.sleep(REQUEST_DELAY_SECONDS)
+
     conn.close()
 
 
 def log_usage():
-    sync_orders_to_usages()
     update_usages()
