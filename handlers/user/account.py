@@ -1,7 +1,8 @@
 from aiogram import Router, F
 from aiogram.types import Message
+
 from config import ADMINS
-from keyboards.main_menu import admin_main_menu_keyboard,user_main_menu_keyboard
+from keyboards.main_menu import admin_main_menu_keyboard, user_main_menu_keyboard
 from services.db import get_user_info
 
 router = Router()
@@ -15,15 +16,19 @@ async def show_user_profile(message: Message):
     role = "admin" if user_id in ADMINS else "user"
     if user:
         first_name, username, created_at, balance, role = user
-        username = f"@{username}" if username else "ندارد"
+        safe_username = f"@{username}" if username else "ندارد"
 
         text = (
-            f"👤 نام: {first_name}\n"
-            f"🔰 یوزرنیم: {username}\n"
-            f"\u200F 🆔 آیدی تلگرام: <code>{user_id}</code>\n"
-            f"🎚 نقش: {'ادمین' if role == 'admin' else 'کاربر'}\n"
-            f"💰 موجودی: {balance} تومان\n"
-            f"📅 عضویت: {created_at.split('T')[0]}"
+            f"👤 <b>اطلاعات حساب کاربری</b>\n\n"
+            f"🧾 نام: <b>{first_name}</b>\n"
+            f"🔰 یوزرنیم: <b>{safe_username}</b>\n"
+            f"💰 موجودی: <b>{balance}</b> تومان\n"
+            f"📅 تاریخ عضویت: <b>{created_at.split('T')[0]}</b>\n\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"🔐 <b>شناسه انتقال مالکیت</b>\n\n"
+            f"این شناسه را برای شخصی که می‌خواهد سرویس را به شما منتقل کند بفرستید:\n\n"
+            f"<code>{user_id}</code>\n"
+            f"━━━━━━━━━━━━━━"
         )
 
     else:

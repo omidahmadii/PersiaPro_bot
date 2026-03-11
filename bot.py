@@ -5,11 +5,11 @@ import sys
 from aiogram import Dispatcher
 
 from handlers.admin import verify_transactions, temporary_charge, cards_managment, user_managment, plan_managment, \
-    reports,exec_commands
+    reports, exec_commands
 from handlers.shared import change_password, activate_stored
-from handlers.user import placeholder, feedback, get_cards, other_features
-from handlers.user import start, buy_service, my_services, account, tutorial, contact_support, payment, renew_service, \
-    FAQ, tariffs
+from handlers.user import placeholder, feedback, get_cards, other_features, start, buy_service, my_services, account, \
+    tutorial, contact_support, payment, renew_service, \
+    FAQ, tariffs, transfer_ownership
 from services.bot_instance import bot
 from services.db import create_tables
 from services.scheduler import scheduler  # همون فایلی که تسک رو نوشتی
@@ -47,6 +47,7 @@ async def main():
         exec_commands.router,
         tariffs.router,
         other_features.router,
+        transfer_ownership.router,
 
         change_password.router,
         FAQ.router,

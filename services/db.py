@@ -1032,3 +1032,92 @@ def get_user_max_active_accounts(user_id: int) -> int:
         return value if value > 0 else 3
     except Exception:
         return 3
+
+
+def get_user_by_id(user_id: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT *
+            FROM users
+            WHERE id = ?
+        """, (user_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
+def get_user_display_name(user_id: int) -> str:
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT first_name, username
+            FROM users
+            WHERE id = ?
+        """, (user_id,))
+        row = cursor.fetchone()
+
+        if not row:
+            return f"کاربر {user_id}"
+
+        first_name, username = row
+
+        if first_name and username:
+            return f"{first_name} (@{username})"
+        if first_name:
+            return str(first_name)
+        if username:
+            return f"@{username}"
+
+        return f"کاربر {user_id}"
+
+
+def get_distinct_usernames_by_user_id(user_id: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT username
+            FROM orders
+            WHERE user_id = ?
+              AND username IS NOT NULL
+            ORDER BY username
+        """, (user_id,))
+        rows = cursor.fetchall()
+        return [row[0] for row in rows if row[0] is not None]
+
+
+def count_orders_by_user_id_and_username(user_id: int, username: str) -> int:
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT COUNT(*)
+            FROM orders
+            WHERE user_id = ? AND username = ?
+        """, (user_id, username))
+        row = cursor.fetchone()
+        return row[0] if row else 0
+
+
+def transfer_orders_by_username_to_another_user(from_user_id: int, to_user_id: int, username: str):
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT COUNT(*)
+            FROM orders
+            WHERE user_id = ? AND username = ?
+        """, (from_user_id, username))
+        row = cursor.fetchone()
+        total_orders = row[0] if row else 0
+
+        if total_orders == 0:
+            return False, "برای این اکانت سفارشی پیدا نشد.", 0
+
+        cursor.execute("""
+            UPDATE orders
+            SET user_id = ?
+            WHERE user_id = ? AND username = ?
+        """, (to_user_id, from_user_id, username))
+
+        conn.commit()
+        return True, None, total_orders
