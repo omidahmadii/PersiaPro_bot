@@ -24,7 +24,7 @@ def get_notification_level(remaining_seconds):
         return 3
     elif remaining_seconds <= 24 * 3600:
         return 2
-    elif remaining_seconds <= 48 * 3600:
+    elif remaining_seconds <= 72 * 3600:
         return 1
     return 0  # نیازی به اخطار نیست
 
