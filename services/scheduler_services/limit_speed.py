@@ -32,7 +32,15 @@ def format_limit_notification(username: str, total_mb: int, limit_mb: int) -> st
     )
 
 
-def format_admin_limit_notification(user_id: int, username: str, total_mb: int, limit_mb: int, speed: str) -> str:
+def format_admin_limit_notification(
+    user_id: int,
+    username: str,
+    total_mb: int,
+    limit_mb: int,
+    speed: str,
+    starts_at: str,
+    expires_at: str,
+) -> str:
     total_gb = round((total_mb or 0) / 1024, 2)
     limit_gb = round((limit_mb or 0) / 1024, 2)
 
@@ -41,6 +49,8 @@ def format_admin_limit_notification(user_id: int, username: str, total_mb: int, 
         f"به دلیل عبور از آستانه مصرف منصفانه محدود شد.\n\n"
         f"👤 یوزرنیم سرویس: <b>{username}</b>\n"
         f"⚡ سرعت اعمال‌شده: <b>{speed}</b>\n"
+        f"📅 شروع سرویس: <b>{starts_at or '-'}</b>\n"
+        f"⏳ پایان سرویس: <b>{expires_at or '-'}</b>\n"
         f"📊 آستانه مصرف: <b>{limit_gb} GB</b>\n"
         f"📈 مصرف کاربر: <b>{total_gb} GB</b>"
     )
@@ -168,6 +178,12 @@ def get_orders_for_limitation():
         if expire_dt and expire_dt < now:
             continue
 
+        if isinstance(starts_at, bytes):
+            starts_at = starts_at.decode("utf-8", errors="ignore")
+
+        if isinstance(expires_at, bytes):
+            expires_at = expires_at.decode("utf-8", errors="ignore")
+
         limit_mb = ((volume_gb or 0) + (extra_volume_gb or 0)) * 1024
         total_mb = usage_total_mb or 0
 
@@ -178,6 +194,8 @@ def get_orders_for_limitation():
             "total_mb": total_mb,
             "applied_speed": normalize_speed(usage_applied_speed),
             "limit_mb": limit_mb,
+            "starts_at": starts_at,
+            "expires_at": expires_at,
         })
 
     return valid_rows
@@ -221,6 +239,8 @@ def limit_speed():
         total_mb = row["total_mb"]
         applied_speed = row["applied_speed"]
         limit_mb = row["limit_mb"]
+        starts_at = row["starts_at"]
+        expires_at = row["expires_at"]
 
         if limit_mb <= 0:
             continue
@@ -228,38 +248,33 @@ def limit_speed():
         if total_mb < limit_mb:
             continue
 
-        # قبلا لیمیت شده
         if applied_speed == LIMIT_SPEED:
             continue
 
         try:
-
-            # اعمال محدودیت سرعت
             apply_limit(username=username, order_id=order_id, speed=LIMIT_SPEED)
 
-            # پیام کاربر
             user_text = format_limit_notification(
                 username=username,
                 total_mb=total_mb,
                 limit_mb=limit_mb,
             )
 
-            # پیام ادمین
             admin_text = format_admin_limit_notification(
                 user_id=user_id,
                 username=username,
                 total_mb=total_mb,
                 limit_mb=limit_mb,
                 speed=LIMIT_SPEED,
+                starts_at=starts_at,
+                expires_at=expires_at,
             )
 
-            # ارسال به کاربر
             try:
                 send_notification(user_id=user_id, text=user_text)
             except Exception as e:
                 print(f"[!] failed to notify user {user_id}: {e}")
 
-            # ارسال به ادمین ها
             for admin in ADMINS:
                 try:
                     send_notification(user_id=admin, text=admin_text)

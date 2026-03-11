@@ -94,7 +94,7 @@ async def limit_speed_loop():
 
         except Exception as e:
             print("Error during scheduler:", e)
-        await asyncio.sleep(60 * 60 * 24)  # هر 24 ساعت
+        await asyncio.sleep(60 * 60 * 1)  # هر 24 ساعت
 
 
 async def activate_waiting_for_payment_orders_loop():
