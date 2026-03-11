@@ -39,13 +39,14 @@ async def catch_any_photo_as_receipt(message: Message, state: FSMContext, bot: B
     file_id = photo.file_id
     user_id = message.from_user.id
 
-    # ذخیره فایل محلی (اختیاری)
-    photo_path = f"transactions/{user_id}-{file_id}.jpg"
-    Path("transactions").mkdir(exist_ok=True)
+    user_folder = Path("transactions") / str(user_id)
+    user_folder.mkdir(parents=True, exist_ok=True)
+
+    photo_path = user_folder / f"{file_id}.jpg"
+
     file = await bot.get_file(file_id)
-    # insert_transaction(user_id=user_id, photo_id=file_id, photo_path=photo_path)
     await bot.download_file(file.file_path, destination=photo_path)
-    photo_hash = calculate_photo_hash(photo_path)
+    photo_hash = calculate_photo_hash(str(photo_path))
 
     # چک تکراری بودن
     existing_hashes = get_all_photo_hashes()
@@ -59,7 +60,7 @@ async def catch_any_photo_as_receipt(message: Message, state: FSMContext, bot: B
     insert_transaction(
         user_id=user_id,
         photo_id=file_id,
-        photo_path=photo_path,
+        photo_path=str(photo_path),
         photo_hash=photo_hash
     )
 

@@ -14,8 +14,7 @@ from services.IBSng import (
 )
 
 TOKEN = config.BOT_TOKEN
-
-LIMIT_SPEED = "128k"   # اگر خواستی بکن "64k"
+LIMIT_SPEED = "64k"
 
 
 def format_limit_notification(username: str, total_mb: int, limit_mb: int) -> str:
@@ -25,9 +24,25 @@ def format_limit_notification(username: str, total_mb: int, limit_mb: int) -> st
     return (
         f"🔔 کاربر گرامی\n"
         f"⚠️ به دلیل عبور از آستانه مصرف منصفانه، "
-        f"سرعت سرویس <b>{username}</b> شما محدود شده است.\n\n"
+        f"سرعت سرویس <b>{username}</b> شما به <b>64K</b> محدود شده است.\n\n"
         f"📊 آستانه مصرف منصفانه: <b>{limit_gb} GB</b>\n"
         f"📈 میزان مصرف شما: <b>{total_gb} GB</b>\n\n"
+        f"برای بازگشت به سرعت عادی، سرویس خود را تمدید کرده و سپس گزینه "
+        f"<b>فعال‌سازی سرویس ذخیره</b> را از پنل کاربری انتخاب کنید."
+    )
+
+
+def format_admin_limit_notification(user_id: int, username: str, total_mb: int, limit_mb: int, speed: str) -> str:
+    total_gb = round((total_mb or 0) / 1024, 2)
+    limit_gb = round((limit_mb or 0) / 1024, 2)
+
+    return (
+        f"🚨 کاربر <a href='tg://user?id={user_id}'>{user_id}</a>\n"
+        f"به دلیل عبور از آستانه مصرف منصفانه محدود شد.\n\n"
+        f"👤 یوزرنیم سرویس: <b>{username}</b>\n"
+        f"⚡ سرعت اعمال‌شده: <b>{speed}</b>\n"
+        f"📊 آستانه مصرف: <b>{limit_gb} GB</b>\n"
+        f"📈 مصرف کاربر: <b>{total_gb} GB</b>"
     )
 
 
@@ -36,7 +51,7 @@ def send_notification(user_id: int, text: str):
     data = {
         "chat_id": user_id,
         "text": text,
-        "parse_mode": "HTML"
+        "parse_mode": "HTML",
     }
     response = requests.post(url, data=data, timeout=15)
     if not response.ok:
@@ -55,12 +70,21 @@ def get_rate_limit(speed: str) -> str:
         "128k": 'Rate-Limit="128k/128k"',
         "64k": 'Rate-Limit="64k/64k"',
     }
+
+    speed = (speed or "").strip().lower()
     if speed not in rate_limit_map:
         raise ValueError(f"Unsupported speed: {speed}")
+
     return rate_limit_map[speed]
 
 
-def save_applied_speed_to_db(applied_speed: Optional[str], order_id: int):
+def normalize_speed(speed: Optional[str]) -> Optional[str]:
+    if not speed:
+        return None
+    return speed.strip().lower()
+
+
+def save_applied_speed_to_db(order_id: int, applied_speed: Optional[str]):
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.cursor()
         cur.execute("""
@@ -71,11 +95,17 @@ def save_applied_speed_to_db(applied_speed: Optional[str], order_id: int):
         conn.commit()
 
 
-def shamsi_to_gregorian(shamsi_str: str) -> Optional[datetime]:
+def shamsi_to_gregorian(shamsi_value) -> Optional[datetime]:
+    if not shamsi_value:
+        return None
+
+    if isinstance(shamsi_value, bytes):
+        shamsi_value = shamsi_value.decode("utf-8", errors="ignore")
+
+    shamsi_str = str(shamsi_value).strip()
     if not shamsi_str:
         return None
 
-    # پشتیبانی از هر دو فرمت: با ثانیه و بدون ثانیه
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
         try:
             return jdatetime.datetime.strptime(shamsi_str, fmt).togregorian()
@@ -86,26 +116,24 @@ def shamsi_to_gregorian(shamsi_str: str) -> Optional[datetime]:
 
 
 def get_orders_for_limitation():
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT
-            id,
-            user_id,
-            username,
-            starts_at,
-            expires_at,
-            volume_gb,
-            extra_volume_gb,
-            usage_total_mb,
-            usage_applied_speed,
-            status
-        FROM orders
-        WHERE status = 'active'
-    """)
-    rows = cur.fetchall()
-    conn.close()
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT
+                id,
+                user_id,
+                username,
+                starts_at,
+                expires_at,
+                volume_gb,
+                extra_volume_gb,
+                usage_total_mb,
+                usage_applied_speed,
+                status
+            FROM orders
+            WHERE status = 'active'
+        """)
+        rows = cur.fetchall()
 
     valid_rows = []
     now = datetime.now()
@@ -124,12 +152,12 @@ def get_orders_for_limitation():
             status,
         ) = row
 
-        if not username:
+        if not username or not user_id:
             continue
 
         try:
-            start_dt = shamsi_to_gregorian(starts_at) if starts_at else None
-            expire_dt = shamsi_to_gregorian(expires_at) if expires_at else None
+            start_dt = shamsi_to_gregorian(starts_at)
+            expire_dt = shamsi_to_gregorian(expires_at)
         except Exception as e:
             print(f"[!] invalid date for order_id={order_id}: {e}")
             continue
@@ -141,13 +169,14 @@ def get_orders_for_limitation():
             continue
 
         limit_mb = ((volume_gb or 0) + (extra_volume_gb or 0)) * 1024
+        total_mb = usage_total_mb or 0
 
         valid_rows.append({
             "order_id": order_id,
             "user_id": user_id,
-            "username": username,
-            "total_mb": usage_total_mb or 0,
-            "applied_speed": usage_applied_speed,
+            "username": str(username),
+            "total_mb": total_mb,
+            "applied_speed": normalize_speed(usage_applied_speed),
             "limit_mb": limit_mb,
         })
 
@@ -155,6 +184,7 @@ def get_orders_for_limitation():
 
 
 def apply_limit(username: str, order_id: int, speed: str):
+    speed = normalize_speed(speed)
     group_radius_attr = get_group_radius_attribute(username)
 
     if not group_radius_attr:
@@ -175,10 +205,10 @@ def apply_limit(username: str, order_id: int, speed: str):
 
     updated_attr = get_user_radius_attribute(username)
     if updated_attr and updated_attr.get("Rate-Limit"):
-        actual_rate_limit = updated_attr["Rate-Limit"].split("/")[0]
-        save_applied_speed_to_db(applied_speed=actual_rate_limit, order_id=order_id)
+        actual_rate_limit = updated_attr["Rate-Limit"].split("/")[0].strip().lower()
+        save_applied_speed_to_db(order_id=order_id, applied_speed=actual_rate_limit)
     else:
-        print(f"[!] Failed to fetch updated attributes for {username}")
+        print(f"[!] failed to fetch updated attributes for {username}")
 
 
 def limit_speed():
@@ -192,49 +222,49 @@ def limit_speed():
         applied_speed = row["applied_speed"]
         limit_mb = row["limit_mb"]
 
-        if not limit_mb or limit_mb <= 0:
+        if limit_mb <= 0:
             continue
 
-        # هنوز به سقف نرسیده
         if total_mb < limit_mb:
             continue
 
-        # قبلا روی همین سرعت محدود شده
+        # قبلا لیمیت شده
         if applied_speed == LIMIT_SPEED:
             continue
 
         try:
-            apply_limit(username, order_id, speed=LIMIT_SPEED)
 
-            text = format_limit_notification(username, total_mb, limit_mb)
+            # اعمال محدودیت سرعت
+            apply_limit(username=username, order_id=order_id, speed=LIMIT_SPEED)
 
+            # پیام کاربر
+            user_text = format_limit_notification(
+                username=username,
+                total_mb=total_mb,
+                limit_mb=limit_mb,
+            )
+
+            # پیام ادمین
+            admin_text = format_admin_limit_notification(
+                user_id=user_id,
+                username=username,
+                total_mb=total_mb,
+                limit_mb=limit_mb,
+                speed=LIMIT_SPEED,
+            )
+
+            # ارسال به کاربر
             try:
-                send_notification(user_id=user_id, text=text)
+                send_notification(user_id=user_id, text=user_text)
             except Exception as e:
                 print(f"[!] failed to notify user {user_id}: {e}")
 
+            # ارسال به ادمین ها
             for admin in ADMINS:
                 try:
-                    send_notification(user_id=admin, text=text)
+                    send_notification(user_id=admin, text=admin_text)
                 except Exception as e:
                     print(f"[!] failed to notify admin {admin}: {e}")
 
         except Exception as e:
             print(f"[!] failed to apply limit for order_id={order_id}, username={username}: {e}")
-
-
-def reset_user_speed(username: str, order_id: int):
-    """
-    برگرداندن سرعت به حالت عادی
-    مثلا وقتی حجم اضافه خرید یا سرویس تمدید شد
-    """
-    radius_attr = get_user_radius_attribute(username)
-
-    if radius_attr and "Group" in radius_attr:
-        group = radius_attr["Group"]
-        radius_attrs = f'Group="{group}"'
-        apply_user_radius_attrs(username, radius_attrs)
-    else:
-        apply_user_radius_attrs(username, "")
-
-    save_applied_speed_to_db(order_id=order_id, applied_speed=None)

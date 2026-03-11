@@ -1,15 +1,14 @@
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery
 from aiogram.enums import ChatMemberStatus
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery
 from aiogram.types import ReplyKeyboardRemove
 
 from config import ADMINS, CHANNEL_ID
 from keyboards.main_menu import user_main_menu_keyboard, admin_main_menu_keyboard
-from services.db import add_user, update_last_name
 from services.bot_instance import bot
-
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from services.db import add_user, update_last_name
 
 router = Router()
 
@@ -116,10 +115,10 @@ async def cmd_start(message: Message):
     await show_main_menu(message)
 
 
-
 # =======================
 #  دکمه «عضو شدم»
 # =======================
+
 
 @router.callback_query(F.data == "check_membership")
 async def check_membership_callback(call: CallbackQuery):
@@ -137,4 +136,3 @@ async def check_membership_callback(call: CallbackQuery):
             "❌ هنوز عضو کانال نشدید",
             show_alert=True
         )
-
