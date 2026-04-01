@@ -22,6 +22,10 @@ class VerifyTxn(StatesGroup):
     waiting_for_reject_reason = State()
 
 
+def is_admin(user_id: int) -> bool:
+    return str(user_id) in [str(admin) for admin in ADMINS]
+
+
 def parse_amount(text: str) -> Optional[int]:
     digits = ''.join(ch for ch in (text or '') if ch.isdigit())
     if not digits:
@@ -130,7 +134,7 @@ def amount_keyboard(txn_id):
 @router.message(F.text == "💳 تایید پرداخت ها")
 async def start_verification(msg: Message):
 
-    if str(msg.from_user.id) not in [str(admin) for admin in ADMINS]:
+    if not is_admin(msg.from_user.id):
         return await msg.reply("دسترسی نداری عزیز 😅")
 
     txns = get_pending_transactions()
@@ -158,6 +162,8 @@ async def start_verification(msg: Message):
 
 @router.callback_query(F.data.startswith("select_"))
 async def txn_selected(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒ.", show_alert=True)
 
     txn_id = int(callback.data.split("_")[1])
 
@@ -196,6 +202,8 @@ async def txn_selected(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("reject_"))
 async def reject_transaction(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒ.", show_alert=True)
 
     txn_id = int(callback.data.split("_")[1])
 
@@ -210,6 +218,9 @@ async def reject_transaction(callback: CallbackQuery, state: FSMContext):
 
 @router.message(VerifyTxn.waiting_for_reject_reason)
 async def receive_reject_reason(msg: Message, state: FSMContext, bot: Bot):
+    if not is_admin(msg.from_user.id):
+        await state.clear()
+        return await msg.reply("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒ Ø¹Ø²ÛŒØ² ðŸ˜…")
 
     data = await state.get_data()
 
@@ -245,6 +256,8 @@ async def receive_reject_reason(msg: Message, state: FSMContext, bot: Bot):
 
 @router.callback_query(F.data.startswith("amount_"))
 async def amount_selected(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒ.", show_alert=True)
 
     parts = callback.data.split("_")
 
@@ -327,6 +340,9 @@ async def amount_selected(callback: CallbackQuery, state: FSMContext, bot: Bot):
 
 @router.message(VerifyTxn.waiting_for_amount)
 async def amount_typed(message: Message, state: FSMContext, bot: Bot):
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        return await message.reply("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒ Ø¹Ø²ÛŒØ² ðŸ˜…")
 
     amount = parse_amount(message.text)
 
@@ -405,6 +421,8 @@ async def amount_typed(message: Message, state: FSMContext, bot: Bot):
 
 @router.callback_query(F.data == "cancel")
 async def cancel_handler(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒ.", show_alert=True)
 
     await state.clear()
 

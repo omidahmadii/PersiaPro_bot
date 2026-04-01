@@ -5,11 +5,12 @@ import sys
 from aiogram import Dispatcher
 
 from handlers.admin import verify_transactions, temporary_charge, cards_managment, user_managment, plan_managment, \
-    reports, exec_commands
+    reports, exec_commands, runtime_settings
 from handlers.shared import change_password, activate_stored
 from handlers.user import placeholder, feedback, get_cards, other_features, start, buy_service, my_services, account, \
     tutorial, contact_support, payment, renew_service, \
     FAQ, tariffs, transfer_ownership
+from config import APP_ENV, ENABLE_SCHEDULER
 from services.bot_instance import bot
 from services.db import create_tables
 from services.scheduler import scheduler  # همون فایلی که تسک رو نوشتی
@@ -43,6 +44,7 @@ async def main():
         user_managment.router,
         plan_managment.router,
         reports.router,
+        runtime_settings.router,
         activate_stored.router,
         exec_commands.router,
         tariffs.router,
@@ -58,6 +60,7 @@ async def main():
     create_tables()
 
     # اجرای تسک زمان‌بندی‌شده
+    logging.info("Starting bot with APP_ENV=%s, scheduler=%s", APP_ENV, "enabled" if ENABLE_SCHEDULER else "disabled")
     asyncio.create_task(scheduler())
     # asyncio.create_task(notifier())
 

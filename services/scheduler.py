@@ -1,5 +1,19 @@
 import asyncio
 
+from config import (
+    APP_ENV,
+    ENABLE_SCHEDULER,
+    SCHEDULER_ACTIVATE_RESERVED,
+    SCHEDULER_ACTIVATE_WAITING_FOR_PAYMENT,
+    SCHEDULER_AUTO_RENEW,
+    SCHEDULER_CANCEL_NOT_PAID,
+    SCHEDULER_EXPIRE_ORDERS,
+    SCHEDULER_LIMIT_SPEED,
+    SCHEDULER_MEMBERSHIP,
+    SCHEDULER_NOTIFIER,
+    SCHEDULER_UPDATE_ORDER_TIMES,
+    SCHEDULER_USAGE_LOGGER,
+)
 from services.IBSng import get_user_exp_date, get_user_start_date
 from services.scheduler_services.activate_reserved_orders import activate_reserved_orders
 from services.scheduler_services.activate_waiting_for_payment_orders import activate_waiting_for_payment_orders
@@ -121,7 +135,7 @@ async def auto_renew_loop():
     while True:
         try:
             # pass
-            await asyncio.to_thread(auto_renew)
+            await auto_renew()
         except Exception as e:
             print(f"خطا در اجرای تمدید خودکار: {e}")
         print("َAuto renew loop finished.")
@@ -129,16 +143,29 @@ async def auto_renew_loop():
 
 
 async def scheduler():
-    await asyncio.gather(
-        update_orders_time_from_ibs(),
-        #notifier_loop(),
-        #activate_reserved_orders_loop(),
-        #expire_orders_loop(),
-        # log_usage_loop(),
-        #check_membership_loop(),
-        # limit_speed_loop(),
-        #activate_waiting_for_payment_orders_loop(),
-        #cancel_not_paid_waiting_for_payment_orders_loop(),
-        #auto_renew_loop()
+    if not ENABLE_SCHEDULER:
+        print(f"Scheduler disabled for APP_ENV={APP_ENV}.")
+        return
 
-    )
+    job_configs = [
+        ("update_orders_time_from_ibs", SCHEDULER_UPDATE_ORDER_TIMES, update_orders_time_from_ibs),
+        ("notifier", SCHEDULER_NOTIFIER, notifier_loop),
+        ("activate_reserved_orders", SCHEDULER_ACTIVATE_RESERVED, activate_reserved_orders_loop),
+        ("expire_orders", SCHEDULER_EXPIRE_ORDERS, expire_orders_loop),
+        ("usage_logger", SCHEDULER_USAGE_LOGGER, log_usage_loop),
+        ("membership", SCHEDULER_MEMBERSHIP, check_membership_loop),
+        ("limit_speed", SCHEDULER_LIMIT_SPEED, limit_speed_loop),
+        ("activate_waiting_for_payment", SCHEDULER_ACTIVATE_WAITING_FOR_PAYMENT, activate_waiting_for_payment_orders_loop),
+        ("cancel_not_paid", SCHEDULER_CANCEL_NOT_PAID, cancel_not_paid_waiting_for_payment_orders_loop),
+        ("auto_renew", SCHEDULER_AUTO_RENEW, auto_renew_loop),
+    ]
+
+    enabled_jobs = [factory() for _, enabled, factory in job_configs if enabled]
+    enabled_names = [name for name, enabled, _ in job_configs if enabled]
+
+    if not enabled_jobs:
+        print(f"Scheduler enabled but no jobs selected for APP_ENV={APP_ENV}.")
+        return
+
+    print(f"Scheduler started for APP_ENV={APP_ENV} with jobs: {', '.join(enabled_names)}")
+    await asyncio.gather(*enabled_jobs)

@@ -4,11 +4,13 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.types import Message, CallbackQuery
 from aiogram.types import ReplyKeyboardRemove
+from aiogram.types import User
 
 from config import ADMINS, CHANNEL_ID
 from keyboards.main_menu import user_main_menu_keyboard, admin_main_menu_keyboard
 from services.bot_instance import bot
 from services.db import add_user, update_last_name
+from services.runtime_settings import get_text_setting
 
 router = Router()
 
@@ -21,6 +23,23 @@ VALID_STATUSES = {
     ChatMemberStatus.ADMINISTRATOR,
     ChatMemberStatus.CREATOR,
 }
+
+DEFAULT_WELCOME_TEXT = (
+    "👋 خوش اومدی!\n\n"
+    "به ربات فروش VPN PersiaPro خوش آمدی 🌐\n\n"
+    "از منوی زیر می‌تونی:\n"
+    "▫️ حساب شارژ کنی\n"
+    "▫️ سرویس بخری\n"
+    "▫️ فیش ارسال کنی\n"
+    "▫️ با پشتیبانی در ارتباط باشی\n\n"
+    "👇 یکی از گزینه‌ها رو انتخاب کن:"
+)
+
+DEFAULT_START_MEMBERSHIP_TEXT = (
+    "🔒 دسترسی محدود\n\n"
+    "برای استفاده از ربات PersiaPro، ابتدا باید عضو کانال رسمی ما بشید.\n\n"
+    "بعد از عضویت، روی دکمه «عضو شدم» بزنید 👇"
+)
 
 
 async def is_user_member(user_id: int) -> bool:
@@ -57,8 +76,8 @@ def join_channel_keyboard():
 #  نمایش منوی اصلی
 # =======================
 
-async def show_main_menu(message: Message):
-    user = message.from_user
+async def show_main_menu(message: Message, actor: User | None = None):
+    user = actor or message.from_user
     user_id = user.id
 
     first_name = user.first_name
@@ -74,16 +93,8 @@ async def show_main_menu(message: Message):
     keyboard = admin_main_menu_keyboard() if role == "admin" else user_main_menu_keyboard()
 
     await message.answer(
-        "👋 **خوش اومدی!**\n\n"
-        "به ربات فروش VPN **PersiaPro** خوش آمدی 🌐\n\n"
-        "از منوی زیر می‌تونی:\n"
-        "▫️ حساب شارژ کنی\n"
-        "▫️ سرویس بخری\n"
-        "▫️ فیش ارسال کنی\n"
-        "▫️ با پشتیبانی در ارتباط باشی\n\n"
-        "👇 یکی از گزینه‌ها رو انتخاب کن:",
+        get_text_setting("message_welcome_text", DEFAULT_WELCOME_TEXT),
         reply_markup=keyboard,
-        parse_mode="Markdown"
     )
 
 
@@ -97,11 +108,8 @@ async def cmd_start(message: Message):
 
     if not await is_user_member(user_id):
         await message.answer(
-            "🔒 **دسترسی محدود**\n\n"
-            "برای استفاده از ربات PersiaPro، ابتدا باید عضو کانال رسمی ما بشید.\n\n"
-            "بعد از عضویت، روی دکمه «عضو شدم» بزنید 👇",
+            get_text_setting("message_start_membership_required", DEFAULT_START_MEMBERSHIP_TEXT),
             reply_markup=join_channel_keyboard(),
-            parse_mode="Markdown",
             disable_web_page_preview=True
         )
 
@@ -112,7 +120,7 @@ async def cmd_start(message: Message):
         )
         return
 
-    await show_main_menu(message)
+    await show_main_menu(message, actor=message.from_user)
 
 
 # =======================
@@ -130,7 +138,7 @@ async def check_membership_callback(call: CallbackQuery):
             "در حال ورود به منوی اصلی ⏳",
             parse_mode="Markdown"
         )
-        await show_main_menu(call.message)
+        await show_main_menu(call.message, actor=call.from_user)
     else:
         await call.answer(
             "❌ هنوز عضو کانال نشدید",

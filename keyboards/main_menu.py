@@ -9,7 +9,7 @@ def admin_main_menu_keyboard():
             [KeyboardButton(text="👥 مدیریت کاربران"), KeyboardButton(text="💳 مدیریت کارت‌ها")],
             [KeyboardButton(text="تغییر رمز عبور"), KeyboardButton(text="📦 مدیریت پلن‌ها")],
             [KeyboardButton(text="📑 گزارشات"), KeyboardButton(text="🚀 فعال‌سازی سرویس ذخیره")],
-            [KeyboardButton(text="🌐 مدیریت رکوردها")],
+            [KeyboardButton(text="🌐 مدیریت رکوردها"), KeyboardButton(text="⚙️ تنظیمات ربات")],
             [KeyboardButton(text="📂 سایر امکانات")],
 
         ],

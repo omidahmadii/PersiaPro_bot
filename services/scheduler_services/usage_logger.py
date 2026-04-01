@@ -7,7 +7,7 @@ from config import DB_PATH
 from services.IBSng import get_usage_from_ibs
 
 
-UPDATE_INTERVAL_HOURS = 6
+UPDATE_INTERVAL_HOURS = 24
 REQUEST_DELAY_SECONDS = 1
 DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 JALALI_MINUTE_FORMAT = "%Y-%m-%d %H:%M"
@@ -49,11 +49,10 @@ def update_usages():
             expires_at,
             usage_last_update
         FROM orders
-        WHERE status = 'active'
+        WHERE status in ( 'active','waiting_for_renewal' ) and starts_at is not NULL
         ORDER BY
             CASE WHEN usage_last_update IS NULL THEN 0 ELSE 1 END,
             expires_at ASC
-        LIMIT 100
     """)
     orders = cur.fetchall()
 
@@ -113,7 +112,7 @@ def update_usages():
         ))
 
         conn.commit()
-        print(f"[+] usage updated for order_id={order_id}")
+        print(f"[+] usage updated for order_id={order_id}, username={username}")
         time.sleep(REQUEST_DELAY_SECONDS)
 
     conn.close()

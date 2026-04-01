@@ -119,6 +119,8 @@ async def records_menu(msg: Message):
 
 @router.callback_query(F.data.startswith("cf_add__"))
 async def cf_add_handler(call: CallbackQuery):
+    if not await is_admin(call.from_user.id):
+        return await call.answer("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒ Ø¹Ø²ÛŒØ² ðŸ˜…", show_alert=True)
     await call.answer()
     site = call.data.split("__", 1)[1]
     ip = SITES.get(site)
@@ -133,6 +135,8 @@ async def cf_add_handler(call: CallbackQuery):
 
 @router.callback_query(F.data.startswith("cf_remove__"))
 async def cf_remove_handler(call: CallbackQuery):
+    if not await is_admin(call.from_user.id):
+        return await call.answer("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒ Ø¹Ø²ÛŒØ² ðŸ˜…", show_alert=True)
     await call.answer()
     site = call.data.split("__", 1)[1]
     ip = SITES.get(site)
@@ -151,6 +155,8 @@ async def cf_remove_handler(call: CallbackQuery):
 
 @router.callback_query(F.data == "cf_list_records")
 async def cf_list_current(call: CallbackQuery):
+    if not await is_admin(call.from_user.id):
+        return await call.answer("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒ Ø¹Ø²ÛŒØ² ðŸ˜…", show_alert=True)
     await call.answer()
     name_to_use = os.getenv("CF_RECORD_NAME", "ov")
     ips = await cf_list_records(name_to_use)

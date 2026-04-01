@@ -32,8 +32,47 @@ from services.db import (
     get_order_status,
     update_last_name,
 )
+from services.runtime_settings import get_bool_setting, get_text_setting
 
 router = Router()
+
+DEFAULT_MEMBERSHIP_REQUIRED_TEXT = "🔒 برای استفاده از این بخش باید عضو کانال PersiaPro باشید."
+DEFAULT_RENEW_DISABLED_TEXT = "در حال حاضر تمدید سرویس غیر فعال می باشد."
+DEFAULT_RENEW_NO_SERVICES_TEXT = "⚠️ هیچ سرویسی برای تمدید پیدا نشد."
+
+
+def is_renew_enabled() -> bool:
+    return get_bool_setting("feature_renew_enabled", default=False)
+
+
+def get_membership_required_text() -> str:
+    return get_text_setting("message_membership_required", DEFAULT_MEMBERSHIP_REQUIRED_TEXT)
+
+
+def get_renew_disabled_text() -> str:
+    return get_text_setting("message_renew_disabled", DEFAULT_RENEW_DISABLED_TEXT)
+
+
+def get_renew_no_services_text() -> str:
+    return get_text_setting("message_renew_no_services", DEFAULT_RENEW_NO_SERVICES_TEXT)
+
+
+async def ensure_renew_enabled_message(message: Message, state: FSMContext) -> bool:
+    if is_renew_enabled():
+        return True
+
+    await state.clear()
+    await message.answer(get_renew_disabled_text(), reply_markup=user_main_menu_keyboard())
+    return False
+
+
+async def ensure_renew_enabled_callback(callback: CallbackQuery, state: FSMContext) -> bool:
+    if is_renew_enabled():
+        return True
+
+    await state.clear()
+    await callback.message.answer(get_renew_disabled_text(), reply_markup=user_main_menu_keyboard())
+    return False
 
 
 # ------------------------ MemberShip ------------------------ #
@@ -41,7 +80,7 @@ router = Router()
 async def membership_guard_message(message: Message) -> bool:
     if not await is_user_member(message.from_user.id):
         await message.answer(
-            "🔒 برای استفاده از این بخش باید عضو کانال PersiaPro باشید.",
+            get_membership_required_text(),
             reply_markup=join_channel_keyboard()
         )
         return False
@@ -52,7 +91,7 @@ async def membership_guard_callback(callback: CallbackQuery) -> bool:
     if not await is_user_member(callback.from_user.id):
         await callback.answer("❌ ابتدا عضو کانال شوید", show_alert=True)
         await callback.message.answer(
-            "🔒 برای ادامه باید عضو کانال PersiaPro باشید.",
+            get_membership_required_text(),
             reply_markup=join_channel_keyboard()
         )
         return False
@@ -299,6 +338,8 @@ def kb_services_inline(services: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
 async def renew_start(message: Message, state: FSMContext):
     if not await membership_guard_message(message):
         return
+    if not await ensure_renew_enabled_message(message, state):
+        return
     user_id = message.from_user.id
     services = get_services_for_renew(user_id)
 
@@ -307,7 +348,7 @@ async def renew_start(message: Message, state: FSMContext):
         update_last_name(user_id=user_id, last_name=last_name)
 
     if not services:
-        return await message.answer("⚠️ هیچ سرویسی برای تمدید پیدا نشد.", reply_markup=user_main_menu_keyboard())
+        return await message.answer(get_renew_no_services_text(), reply_markup=user_main_menu_keyboard())
 
     await state.clear()
     await state.update_data(services=services)
@@ -321,6 +362,8 @@ async def renew_start(message: Message, state: FSMContext):
 # ---------------- Step 1: Choose Service ---------------- #
 @router.callback_query(F.data.startswith("renew|service"))
 async def renew_choose_service(callback: CallbackQuery, state: FSMContext):
+    if not await ensure_renew_enabled_callback(callback, state):
+        return
     _, _, service_id = callback.data.split("|")
     data = await state.get_data()
     services = data.get("services", [])
@@ -364,6 +407,8 @@ async def renew_choose_service(callback: CallbackQuery, state: FSMContext):
 # ---------------- Step 2: Choose Category ---------------- #
 @router.callback_query(F.data.startswith("renew|category"))
 async def renew_choose_category(callback: CallbackQuery, state: FSMContext):
+    if not await ensure_renew_enabled_callback(callback, state):
+        return
     _, _, category = callback.data.split("|")
     category = normalize_category(category)
     await state.update_data(category=category)
@@ -397,6 +442,8 @@ async def renew_choose_category(callback: CallbackQuery, state: FSMContext):
 # ---------------- Step 3: Choose Location (for fixed_ip) ---------------- #
 @router.callback_query(F.data.startswith("renew|location"))
 async def renew_choose_location(callback: CallbackQuery, state: FSMContext):
+    if not await ensure_renew_enabled_callback(callback, state):
+        return
     _, _, location = callback.data.split("|")
     await state.update_data(location=location)
 
@@ -422,6 +469,8 @@ async def renew_choose_location(callback: CallbackQuery, state: FSMContext):
 # ---------------- Step 4: Choose Plan ---------------- #
 @router.callback_query(F.data.startswith("renew|plan"))
 async def renew_choose_plan(callback: CallbackQuery, state: FSMContext):
+    if not await ensure_renew_enabled_callback(callback, state):
+        return
     _, _, plan_id = callback.data.split("|")
     plans = get_renew_plans()
     selected_plan = next((p for p in plans if str(p.get("id")) == plan_id), None)
@@ -464,6 +513,8 @@ async def renew_choose_plan(callback: CallbackQuery, state: FSMContext):
 # ---------------- Step 5: Confirm & Process ---------------- #
 @router.callback_query(F.data == "renew|confirm")
 async def renew_confirm_and_process(callback: CallbackQuery, state: FSMContext):
+    if not await ensure_renew_enabled_callback(callback, state):
+        return
     data = await state.get_data()
     selected_plan = data.get("selected_plan")
     selected_service = data.get("selected_service")
@@ -602,6 +653,8 @@ async def renew_confirm_and_process(callback: CallbackQuery, state: FSMContext):
 # ---------------- Back Navigation ---------------- #
 @router.callback_query(F.data.startswith("renew|back"))
 async def renew_go_back(callback: CallbackQuery, state: FSMContext):
+    if not await ensure_renew_enabled_callback(callback, state):
+        return
     _, _, target = callback.data.split("|")
     data = await state.get_data()
 

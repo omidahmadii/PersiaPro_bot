@@ -55,9 +55,11 @@ def _maybe_activate_reserved_order(reserved_order: dict) -> None:
     update_order_status(order_id=reserved_order["id"], new_status="active")
 
     # Sync IBSng group according to plan duration
-    duration_months = get_order_plan_duration(order_id=reserved_order["id"]).get("duration_months", 1)
+    duration_info = get_order_plan_duration(order_id=reserved_order["id"]) or {}
+    duration_months = duration_info.get("duration_months", 1)
     # group_name = f"{duration_months}-Month"
-    group_name = get_order_plan_group_name(order_id=reserved_order["id"])["group_name"]
+    group_info = get_order_plan_group_name(order_id=reserved_order["id"]) or {}
+    group_name = group_info.get("group_name", "Starter-Bot")
     IBSng.reset_account_client(username=reserved_order["username"])
     change_group(reserved_order["username"], group_name)
     # Notify the user via Telegram

@@ -10,6 +10,13 @@ from config import DB_PATH
 def create_tables():
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
+        from services.runtime_settings import initialize_runtime_settings_schema
+
+        def ensure_column(table: str, column: str, definition: str):
+            existing_columns = [row[1] for row in cursor.execute(f"PRAGMA table_info({table})").fetchall()]
+            if column not in existing_columns:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
         cursor.execute("""
                 CREATE TABLE IF NOT EXISTS accounts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -147,6 +154,51 @@ def create_tables():
                     membership_status TEXT DEFAULT 'not_member'
                 )
                 """)
+
+        cursor.execute("""
+                CREATE TABLE IF NOT EXISTS order_payments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    order_id INTEGER,
+                    amount INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                """)
+
+        cursor.execute("""
+                CREATE TABLE IF NOT EXISTS ownership_transfers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    from_user_id INTEGER NOT NULL,
+                    to_user_id INTEGER NOT NULL,
+                    transferred_by INTEGER,
+                    transferred_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    total_orders INTEGER DEFAULT 0
+                )
+                """)
+
+        ensure_column("plans", "duration_days", "INTEGER")
+        ensure_column("plans", "category", "TEXT DEFAULT 'standard'")
+        ensure_column("plans", "access_level", "TEXT")
+        ensure_column("plans", "display_context", "TEXT DEFAULT 'all'")
+
+        ensure_column("users", "last_name", "TEXT")
+        ensure_column("users", "message_name", "TEXT")
+        ensure_column("users", "referred_by", "INTEGER")
+        ensure_column("users", "max_active_accounts", "INTEGER DEFAULT 3")
+
+        ensure_column("orders", "volume_gb", "INTEGER DEFAULT 0")
+        ensure_column("orders", "extra_volume_gb", "INTEGER DEFAULT 0")
+        ensure_column("orders", "auto_renew", "INTEGER DEFAULT 0")
+        ensure_column("orders", "usage_sent_mb", "INTEGER DEFAULT 0")
+        ensure_column("orders", "usage_received_mb", "INTEGER DEFAULT 0")
+        ensure_column("orders", "usage_total_mb", "INTEGER DEFAULT 0")
+        ensure_column("orders", "usage_last_update", "TEXT")
+        ensure_column("orders", "usage_applied_speed", "TEXT")
+
+        ensure_column("order_usages", "limit_mb", "INTEGER DEFAULT 0")
+        ensure_column("order_usages", "status", "TEXT DEFAULT 'active'")
+        initialize_runtime_settings_schema(cursor)
         conn.commit()
 
 
@@ -442,8 +494,7 @@ def get_user_balance(user_id: int) -> Optional[int]:
         cursor = conn.cursor()
         cursor.execute("SELECT balance FROM users WHERE id = ?", (user_id,))
         result = cursor.fetchone()
-        balance = result[0]
-        return balance
+        return result[0] if result else 0
 
 
 # پیدا کردن اولین اکانت آزاد
@@ -707,7 +758,7 @@ def get_services_for_renew(user_id):
         cur.execute("""
             SELECT id, username, expires_at, status
             FROM orders
-            WHERE user_id = ? AND status IN ('active','expired') AND expires_at not NULL
+            WHERE user_id = ? AND status IN ('active','expired') AND expires_at IS NOT NULL
         """, (user_id,))
         return [dict(r) for r in cur.fetchall()]
 
@@ -742,7 +793,8 @@ def get_order_data(order_id):
                 SELECT * FROM orders
                 WHERE id = ?
             """, (order_id,))
-        return dict(cursor.fetchone())
+        row = cursor.fetchone()
+        return dict(row) if row else None
 
 
 def get_order_plan_duration(order_id):
@@ -754,7 +806,8 @@ def get_order_plan_duration(order_id):
                 JOIN orders on orders.plan_id = plans.id
                 WHERE orders.id = ?
             """, (order_id,))
-        return dict(cursor.fetchone())
+        row = cursor.fetchone()
+        return dict(row) if row else None
 
 
 def get_order_plan_group_name(order_id):
@@ -766,7 +819,8 @@ def get_order_plan_group_name(order_id):
                 JOIN orders on orders.plan_id = plans.id
                 WHERE orders.id = ?
             """, (order_id,))
-        return dict(cursor.fetchone())
+        row = cursor.fetchone()
+        return dict(row) if row else None
 
 
 def get_orders_for_notifications(expires_at):
@@ -937,7 +991,7 @@ def get_plan_info(plan_id: int):
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM plans WHERE id = ?", (plan_id,))
         row = cursor.fetchone()
-        return dict(row)
+        return dict(row) if row else None
 
 
 def get_plan_name(plan_id: int) -> Optional[str]:

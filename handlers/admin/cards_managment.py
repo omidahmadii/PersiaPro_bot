@@ -92,6 +92,14 @@ async def manage_cards_entry(msg: Message):
     await show_cards_list_message(msg)
 
 
+@router.callback_query(F.data == "manage_cards")
+async def manage_cards_callback(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒØ¯.", show_alert=True)
+    await state.clear()
+    await show_cards_list_callback(cb)
+
+
 # --- نمایش لیست کارت‌ها برای Callback ---
 async def show_cards_list_callback(cb: CallbackQuery):
     if not is_admin(cb.from_user.id):
@@ -148,6 +156,9 @@ async def card_add_start(cb: CallbackQuery, state: FSMContext):
 
 @router.message(CardStates.waiting_for_add)
 async def card_add_receive(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        await state.clear()
+        return await msg.reply("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒ ðŸ˜…")
     data = msg.text.split("|")
     if len(data) < 3:
         return await msg.answer("فرمت نادرست — حداقل شماره، نام صاحب و نام بانک لازم است.")
@@ -257,6 +268,9 @@ async def card_edit_start(cb: CallbackQuery, state: FSMContext):
 
 @router.message(CardStates.waiting_for_value)
 async def card_receive_new_value(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        await state.clear()
+        return await msg.reply("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒ ðŸ˜…")
     data = await state.get_data()
     cid = data.get("edit_card_id")
     field = data.get("edit_field")

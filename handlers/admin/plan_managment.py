@@ -78,6 +78,14 @@ async def manage_plans_entry(msg: Message):
     await show_plans_list_message(msg)
 
 
+@router.callback_query(F.data == "manage_plans")
+async def manage_plans_callback(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒØ¯.", show_alert=True)
+    await state.clear()
+    await show_plans_list_callback(cb)
+
+
 
 async def show_plans_list_message(msg: Message):
     plans = get_all_plans()
@@ -92,6 +100,8 @@ async def show_plans_list_message(msg: Message):
     await msg.answer("لیست پلن‌ها:", reply_markup=keyboard)
 
 async def show_plans_list_callback(cb: CallbackQuery):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒØ¯.", show_alert=True)
     await show_plans_list_message(cb.message)
     await cb.answer()
 
@@ -99,6 +109,8 @@ async def show_plans_list_callback(cb: CallbackQuery):
 # --- بازگشت ---
 @router.callback_query(F.data == "plan_back_main")
 async def plan_back_main(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒØ¯.", show_alert=True)
     await state.clear()
     await cb.message.answer("بازگشت به منوی اصلی.", reply_markup=admin_main_menu_keyboard())
     await cb.answer()
@@ -107,6 +119,8 @@ async def plan_back_main(cb: CallbackQuery, state: FSMContext):
 # --- افزودن پلن ---
 @router.callback_query(F.data == "plan_add")
 async def plan_add_start(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒØ¯.", show_alert=True)
     await state.update_data(plan_action="add")
     await cb.message.answer(
         "فرمت:\n"
@@ -118,6 +132,9 @@ async def plan_add_start(cb: CallbackQuery, state: FSMContext):
 
 @router.message(PlanStates.waiting_for_add)
 async def plan_add_receive(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        await state.clear()
+        return await msg.reply("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒ ðŸ˜…")
     data = [d.strip() for d in msg.text.split("|")]
     if len(data) < 6:
         return await msg.answer("فرمت نادرست — حداقل نام، حجم، ماه، روز، یوزر، قیمت لازم است.")
@@ -131,6 +148,8 @@ async def plan_add_receive(msg: Message, state: FSMContext):
 # --- انتخاب پلن ---
 @router.callback_query(F.data.startswith("plan_select_"))
 async def plan_selected(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒØ¯.", show_alert=True)
     pid = int(cb.data.split("_")[2])
     row = get_plan(pid)
     if not row:
@@ -170,6 +189,8 @@ async def plan_selected(cb: CallbackQuery, state: FSMContext):
 # --- toggle visible ---
 @router.callback_query(PlanStates.waiting_for_action, F.data.startswith("plan_toggle_"))
 async def plan_toggle(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒØ¯.", show_alert=True)
     pid = int(cb.data.split("_")[2])
     plan = get_plan(pid)
     new_vis = 0 if plan[8] else 1
@@ -182,6 +203,8 @@ async def plan_toggle(cb: CallbackQuery, state: FSMContext):
 # --- delete ---
 @router.callback_query(PlanStates.waiting_for_action, F.data.startswith("plan_delete_"))
 async def plan_delete(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒØ¯.", show_alert=True)
     pid = int(cb.data.split("_")[2])
     delete_plan_from_db(pid)
     await cb.message.answer(f"🗑️ پلن #{pid} حذف شد.")
@@ -192,6 +215,8 @@ async def plan_delete(cb: CallbackQuery, state: FSMContext):
 # --- edit field ---
 @router.callback_query(PlanStates.waiting_for_action, F.data.startswith("plan_edit_"))
 async def plan_edit_start(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒØ¯.", show_alert=True)
     tmp = cb.data[len("plan_edit_"):]
     field_name, pid = tmp.rsplit("_", 1)
     pid = int(pid)
@@ -213,6 +238,9 @@ async def plan_edit_start(cb: CallbackQuery, state: FSMContext):
 
 @router.message(PlanStates.waiting_for_value)
 async def plan_receive_new_value(msg: Message, state: FSMContext):
+    if not is_admin(msg.from_user.id):
+        await state.clear()
+        return await msg.reply("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒ ðŸ˜…")
     data = await state.get_data()
     pid = data.get("edit_plan_id")
     field = data.get("edit_field")

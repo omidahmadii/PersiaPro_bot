@@ -41,7 +41,8 @@ def _maybe_waiting_for_payment_order(waiting_for_payment: dict) -> None:
         update_order_status(order_id=previous["id"], new_status="renewed")
         update_order_status(order_id=waiting_for_payment["id"], new_status="active")
 
-        group_name = get_order_plan_group_name(order_id=waiting_for_payment["id"])["group_name"]
+        group_info = get_order_plan_group_name(order_id=waiting_for_payment["id"]) or {}
+        group_name = group_info.get("group_name", "Starter-Bot")
 
         IBSng.reset_account_client(username=waiting_for_payment["username"])
         change_group(waiting_for_payment["username"], group_name)

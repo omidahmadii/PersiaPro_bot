@@ -24,6 +24,8 @@ async def auto_renew():
         user_id = order['user_id']
         plan_id = order['plan_id']
         plan = db.get_plan_info(plan_id)
+        if not plan:
+            continue
         plan_price = plan['price']
         user_balance = db.get_user_balance(user_id)
 

@@ -26,16 +26,54 @@ from services.db import (
     count_user_active_orders,
     get_user_max_active_accounts
 )
+from services.runtime_settings import get_bool_setting, get_text_setting
 
-active = True
 router = Router()
+
+DEFAULT_MEMBERSHIP_REQUIRED_TEXT = "🔒 برای استفاده از این بخش باید عضو کانال PersiaPro باشید."
+DEFAULT_BUY_DISABLED_TEXT = "در حال حاضر فروش سرویس جدید غیر فعال می باشد."
+DEFAULT_BUY_NO_ACTIVE_PLANS_TEXT = "در حال حاضر پلن فعالی برای فروش موجود نیست."
+
+
+def is_buy_enabled() -> bool:
+    return get_bool_setting("feature_buy_enabled", default=False)
+
+
+def get_membership_required_text() -> str:
+    return get_text_setting("message_membership_required", DEFAULT_MEMBERSHIP_REQUIRED_TEXT)
+
+
+def get_buy_disabled_text() -> str:
+    return get_text_setting("message_buy_disabled", DEFAULT_BUY_DISABLED_TEXT)
+
+
+def get_buy_no_active_plans_text() -> str:
+    return get_text_setting("message_buy_no_active_plans", DEFAULT_BUY_NO_ACTIVE_PLANS_TEXT)
+
+
+async def ensure_buy_enabled_message(message: Message, state: FSMContext) -> bool:
+    if is_buy_enabled():
+        return True
+
+    await state.clear()
+    await message.answer(get_buy_disabled_text(), reply_markup=user_main_menu_keyboard())
+    return False
+
+
+async def ensure_buy_enabled_callback(callback: CallbackQuery, state: FSMContext) -> bool:
+    if is_buy_enabled():
+        return True
+
+    await state.clear()
+    await callback.message.answer(get_buy_disabled_text(), reply_markup=user_main_menu_keyboard())
+    return False
 
 
 # ------------------------ MemberShip ------------------------ #
 async def membership_guard_message(message: Message) -> bool:
     if not await is_user_member(message.from_user.id):
         await message.answer(
-            "🔒 برای استفاده از این بخش باید عضو کانال PersiaPro باشید.",
+            get_membership_required_text(),
             reply_markup=join_channel_keyboard()
         )
         return False
@@ -46,7 +84,7 @@ async def membership_guard_callback(callback: CallbackQuery) -> bool:
     if not await is_user_member(callback.from_user.id):
         await callback.answer("❌ ابتدا عضو کانال شوید", show_alert=True)
         await callback.message.answer(
-            "🔒 برای ادامه باید عضو کانال PersiaPro باشید.",
+            get_membership_required_text(),
             reply_markup=join_channel_keyboard()
         )
         return False
@@ -314,6 +352,8 @@ class BuyServiceStates(StatesGroup):
 async def start_buy(message: Message, state: FSMContext):
     if not await membership_guard_message(message):
         return
+    if not await ensure_buy_enabled_message(message, state):
+        return
 
     user_id = message.from_user.id
     first_name = message.from_user.first_name
@@ -340,20 +380,13 @@ async def start_buy(message: Message, state: FSMContext):
             reply_markup=user_main_menu_keyboard()
         )
 
-    if not active:
-        await state.clear()
-        return await message.answer(
-            text="در حال حاضر فروش سرویس جدید غیر فعال می باشد.",
-            reply_markup=user_main_menu_keyboard()
-        )
-
     buy_plans = get_buy_plans()
     active_plans = [p for p in buy_plans if _is_active(p)]
 
     if not active_plans:
         await state.clear()
         return await message.answer(
-            "در حال حاضر پلن فعالی برای فروش موجود نیست.",
+            get_buy_no_active_plans_text(),
             reply_markup=user_main_menu_keyboard()
         )
 
@@ -397,6 +430,8 @@ async def start_buy(message: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("buy|category"))
 async def choose_category(callback: CallbackQuery, state: FSMContext):
+    if not await ensure_buy_enabled_callback(callback, state):
+        return
     _, _, category_raw = callback.data.split("|")
     category = normalize_category(category_raw)
     await state.update_data(category=category)
@@ -432,6 +467,8 @@ async def choose_category(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("buy|location"))
 async def choose_location(callback: CallbackQuery, state: FSMContext):
+    if not await ensure_buy_enabled_callback(callback, state):
+        return
     _, _, location = callback.data.split("|")
     await state.update_data(location=location)
 
@@ -454,6 +491,8 @@ async def choose_location(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("buy|duration"))
 async def choose_duration(callback: CallbackQuery, state: FSMContext):
+    if not await ensure_buy_enabled_callback(callback, state):
+        return
     _, _, plan_id = callback.data.split("|")
     plans = get_buy_plans()
     selected_plan = next((p for p in plans if str(p.get("id")) == plan_id), None)
@@ -494,6 +533,8 @@ async def choose_duration(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "buy|confirm")
 async def confirm_and_create(callback: CallbackQuery, state: FSMContext):
+    if not await ensure_buy_enabled_callback(callback, state):
+        return
     data = await state.get_data()
     plan = data.get("plan")
 
@@ -521,10 +562,10 @@ async def confirm_and_create(callback: CallbackQuery, state: FSMContext):
 
         text_user = (
             f"❌ موجودی شما کافی نمی باشد.\n"
-            f" سرویس شما در وضعیت در انتظار پرداخت قرار گرفت.\n\n"
+            f" تا زمانی که کیف پول شما شارژ نشود، سفارش ثبت نمی‌شود.\n\n"
             f"لطفا مبلغ {format_price(required_balanace)} تومان به کارت زیر واریز نموده و تصویر آن را ارسال نمایید.\n\n"
             f"{cards_text}\n"
-            f"⚠️ پس از تایید مبلغ توسط ادمین سرویس شما فعال خواهد شد."
+            f"⚠️ پس از تایید مبلغ توسط ادمین، موجودی کیف پول شما افزایش پیدا می‌کند و می‌توانید خرید را دوباره نهایی کنید."
         )
         return await callback.message.answer(text=text_user, parse_mode="HTML", reply_markup=user_main_menu_keyboard())
 
@@ -585,6 +626,8 @@ async def confirm_and_create(callback: CallbackQuery, state: FSMContext):
 # ---------------- Back Navigation ---------------- #
 @router.callback_query(F.data.startswith("buy|back"))
 async def go_back(callback: CallbackQuery, state: FSMContext):
+    if not await ensure_buy_enabled_callback(callback, state):
+        return
     _, _, target = callback.data.split("|")
 
     if target == "category":
