@@ -6,9 +6,12 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from config import ADMINS
 from keyboards.main_menu import admin_main_menu_keyboard
 from services.runtime_settings import (
+    ACCESS_MODE_SETTING_KEYS,
     FEATURE_SETTING_KEYS,
     TEXT_SETTING_KEYS,
     SETTING_DEFINITIONS,
+    get_access_mode_label,
+    get_access_mode_setting,
     get_bool_setting,
     get_default_setting_value,
     get_text_setting,
@@ -48,6 +51,13 @@ def settings_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text=f"{icon} {label}", callback_data=f"settings|toggle|{key}")]
         )
 
+    for key in ACCESS_MODE_SETTING_KEYS:
+        label = SETTING_DEFINITIONS[key]["label"]
+        mode = get_access_mode_setting(key)
+        rows.append(
+            [InlineKeyboardButton(text=f"👥 {label}: {get_access_mode_label(mode)}", callback_data=f"settings|mode|{key}")]
+        )
+
     for key in TEXT_SETTING_KEYS:
         label = SETTING_DEFINITIONS[key]["label"]
         rows.append(
@@ -78,6 +88,13 @@ def build_settings_text() -> str:
         label = SETTING_DEFINITIONS[key]["label"]
         enabled = get_bool_setting(key, default=get_default_setting_value(key) == "1")
         lines.append(f"• {label}: {'✅ فعال' if enabled else '🚫 غیرفعال'}")
+
+    lines.extend(["", "سیاست دسترسی:"])
+
+    for key in ACCESS_MODE_SETTING_KEYS:
+        label = SETTING_DEFINITIONS[key]["label"]
+        mode = get_access_mode_setting(key)
+        lines.append(f"• {label}: {get_access_mode_label(mode)}")
 
     lines.extend(["", "پیام‌های قابل ویرایش:"])
 
@@ -130,6 +147,24 @@ async def runtime_settings_toggle(callback: CallbackQuery):
 
     label = SETTING_DEFINITIONS[key]["label"]
     await callback.answer(f"{label} {'فعال' if new_value else 'غیرفعال'} شد.")
+    await _show_settings_panel_callback(callback)
+
+
+@router.callback_query(F.data.startswith("settings|mode|"))
+async def runtime_settings_change_mode(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("دسترسی ندارید.", show_alert=True)
+
+    _, _, key = callback.data.split("|", 2)
+    if key not in ACCESS_MODE_SETTING_KEYS:
+        return await callback.answer("تنظیمات نامعتبر است.", show_alert=True)
+
+    current_mode = get_access_mode_setting(key)
+    new_mode = "all" if current_mode == "funded_only" else "funded_only"
+    set_setting(key, new_mode, value_type="choice")
+
+    label = SETTING_DEFINITIONS[key]["label"]
+    await callback.answer(f"{label} روی «{get_access_mode_label(new_mode)}» قرار گرفت.")
     await _show_settings_panel_callback(callback)
 
 

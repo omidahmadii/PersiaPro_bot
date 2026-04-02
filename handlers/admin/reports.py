@@ -1,6 +1,6 @@
 import sqlite3
 from html import escape
-from typing import Iterable
+from typing import Iterable, Optional, Tuple, Union
 
 import jdatetime
 from aiogram import F, Router
@@ -49,14 +49,14 @@ def _fmt_num(value) -> str:
         return str(value or 0)
 
 
-def _compact_text(value: str | None, limit: int = 70) -> str:
+def _compact_text(value: Optional[str], limit: int = 70) -> str:
     text = (value or "").replace("\n", " ").strip()
     if len(text) <= limit:
         return escape(text or "-")
     return escape(text[: limit - 1] + "…")
 
 
-def _build_user_label(row: sqlite3.Row | tuple | None) -> str:
+def _build_user_label(row: Optional[Union[sqlite3.Row, Tuple]]) -> str:
     if not row:
         return "-"
 
@@ -682,7 +682,7 @@ def build_user_balances_report(conn: sqlite3.Connection) -> str:
     return "\n".join(lines)
 
 
-def build_user_detail_report(user_id: int) -> str | None:
+def build_user_detail_report(user_id: int) -> Optional[str]:
     with _connect() as conn:
         cur = conn.cursor()
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
-from typing import Any
+from typing import Any, Optional
 
 from config import DB_PATH
 
@@ -12,10 +12,20 @@ SETTING_DEFINITIONS: dict[str, dict[str, Any]] = {
         "default": "0",
         "label": "فروش سرویس",
     },
+    "feature_buy_access_mode": {
+        "type": "choice",
+        "default": "funded_only",
+        "label": "دسترسی خرید",
+    },
     "feature_renew_enabled": {
         "type": "bool",
         "default": "0",
         "label": "تمدید سرویس",
+    },
+    "feature_renew_access_mode": {
+        "type": "choice",
+        "default": "funded_only",
+        "label": "دسترسی تمدید",
     },
     "message_welcome_text": {
         "type": "text",
@@ -72,6 +82,16 @@ FEATURE_SETTING_KEYS = (
     "feature_renew_enabled",
 )
 
+ACCESS_MODE_SETTING_KEYS = (
+    "feature_buy_access_mode",
+    "feature_renew_access_mode",
+)
+
+ACCESS_MODE_LABELS = {
+    "all": "همه کاربران",
+    "funded_only": "فقط کاربران با موجودی کافی",
+}
+
 TEXT_SETTING_KEYS = (
     "message_welcome_text",
     "message_start_membership_required",
@@ -115,14 +135,14 @@ def get_setting_definition(key: str) -> dict[str, Any]:
     return SETTING_DEFINITIONS.get(key, {})
 
 
-def get_default_setting_value(key: str, fallback: str | None = None) -> str | None:
+def get_default_setting_value(key: str, fallback: Optional[str] = None) -> Optional[str]:
     definition = get_setting_definition(key)
     if "default" in definition:
         return str(definition["default"])
     return fallback
 
 
-def get_setting(key: str, fallback: str | None = None) -> str | None:
+def get_setting(key: str, fallback: Optional[str] = None) -> Optional[str]:
     with _connect() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT value FROM app_settings WHERE key = ?", (key,))
@@ -140,7 +160,7 @@ def get_text_setting(key: str, fallback: str = "") -> str:
     return str(value)
 
 
-def _is_truthy(raw: str | None) -> bool:
+def _is_truthy(raw: Optional[str]) -> bool:
     return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -149,7 +169,18 @@ def get_bool_setting(key: str, default: bool = False) -> bool:
     return _is_truthy(raw)
 
 
-def set_setting(key: str, value: str, value_type: str | None = None) -> None:
+def get_access_mode_setting(key: str, default: str = "funded_only") -> str:
+    raw = get_setting(key, default)
+    if raw in ACCESS_MODE_LABELS:
+        return str(raw)
+    return default
+
+
+def get_access_mode_label(mode: str) -> str:
+    return ACCESS_MODE_LABELS.get(mode, ACCESS_MODE_LABELS["funded_only"])
+
+
+def set_setting(key: str, value: str, value_type: Optional[str] = None) -> None:
     definition = get_setting_definition(key)
     resolved_type = value_type or str(definition.get("type", "text"))
 
@@ -157,15 +188,30 @@ def set_setting(key: str, value: str, value_type: str | None = None) -> None:
         cursor = conn.cursor()
         cursor.execute(
             """
-            INSERT INTO app_settings (key, value, value_type, updated_at)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(key) DO UPDATE SET
-                value = excluded.value,
-                value_type = excluded.value_type,
-                updated_at = CURRENT_TIMESTAMP
+            UPDATE app_settings
+            SET value = ?, value_type = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE key = ?
             """,
-            (key, value, resolved_type),
+            (value, resolved_type, key),
         )
+
+        if cursor.rowcount == 0:
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO app_settings (key, value, value_type, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (key, value, resolved_type),
+            )
+            cursor.execute(
+                """
+                UPDATE app_settings
+                SET value = ?, value_type = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE key = ?
+                """,
+                (value, resolved_type, key),
+            )
+
         conn.commit()
 
 

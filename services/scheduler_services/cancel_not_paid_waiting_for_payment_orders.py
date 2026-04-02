@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from typing import Optional
 
 from services.db import (
     get_waiting_for_payment_orders, update_order_status
@@ -21,7 +22,7 @@ def _maybe_not_payed(waiting_for_payment: dict) -> None:
     # چک کنیم آیا بیشتر از 3 روز گذشته
     if now - created_time > timedelta(days=3):
         order_id = waiting_for_payment['id']
-        previous: int | None = waiting_for_payment.get("is_renewal_of_order")
+        previous: Optional[int] = waiting_for_payment.get("is_renewal_of_order")
         if not previous:
             return  # No linked order → nothing to do
         update_order_status(order_id=previous, new_status="active")

@@ -1,5 +1,5 @@
 import datetime
-from typing import Union
+from typing import Optional, Union
 
 import jdatetime
 import requests
@@ -26,7 +26,7 @@ def _maybe_waiting_for_payment_order(waiting_for_payment: dict) -> None:
     if current_balance < plan_price:
         return  # هنوز موجودیش کافی نیست.
 
-    prev_id: int | None = waiting_for_payment.get("is_renewal_of_order")
+    prev_id: Optional[int] = waiting_for_payment.get("is_renewal_of_order")
     if not prev_id:
         return  # No linked order → nothing to do
 
@@ -56,7 +56,7 @@ def _maybe_waiting_for_payment_order(waiting_for_payment: dict) -> None:
 
 
 def _is_previous_order_expired(order: dict) -> bool:
-    exp_str: str | None = order.get("expires_at")
+    exp_str: Optional[str] = order.get("expires_at")
     if not exp_str:
         return False
 

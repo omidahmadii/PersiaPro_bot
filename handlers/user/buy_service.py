@@ -26,7 +26,7 @@ from services.db import (
     count_user_active_orders,
     get_user_max_active_accounts
 )
-from services.runtime_settings import get_bool_setting, get_text_setting
+from services.runtime_settings import get_access_mode_setting, get_bool_setting, get_text_setting
 
 router = Router()
 
@@ -37,6 +37,14 @@ DEFAULT_BUY_NO_ACTIVE_PLANS_TEXT = "در حال حاضر پلن فعالی بر�
 
 def is_buy_enabled() -> bool:
     return get_bool_setting("feature_buy_enabled", default=False)
+
+
+def get_buy_access_mode() -> str:
+    return get_access_mode_setting("feature_buy_access_mode", default="funded_only")
+
+
+def is_buy_funded_only_mode() -> bool:
+    return get_buy_access_mode() == "funded_only"
 
 
 def get_membership_required_text() -> str:
@@ -390,19 +398,20 @@ async def start_buy(message: Message, state: FSMContext):
             reply_markup=user_main_menu_keyboard()
         )
 
-    user_balance = get_user_balance(user_id)
-    min_price = get_min_active_plan_price(active_plans)
+    if is_buy_funded_only_mode():
+        user_balance = get_user_balance(user_id)
+        min_price = get_min_active_plan_price(active_plans)
 
-    if user_balance < min_price:
-        await state.clear()
+        if user_balance < min_price:
+            await state.clear()
 
-        plans_text = build_plans_price_list(active_plans)
+            plans_text = build_plans_price_list(active_plans)
 
-        return await message.answer(
-            "❌ در حال حاضر فروش بسته است.\n\n"
-            f"{plans_text}",
-            reply_markup=user_main_menu_keyboard()
-        )
+            return await message.answer(
+                "❌ در حال حاضر فروش بسته است.\n\n"
+                f"{plans_text}",
+                reply_markup=user_main_menu_keyboard()
+            )
 
     kind, markup, only_category, _plans_for_only_category = make_initial_buy_keyboard(active_plans)
 

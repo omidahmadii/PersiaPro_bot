@@ -1,4 +1,5 @@
 import datetime
+from typing import Optional
 
 import jdatetime
 import requests
@@ -39,7 +40,7 @@ def activate_reserved_orders() -> None:
 # ----------------------------------------------------------------------------
 
 def _maybe_activate_reserved_order(reserved_order: dict) -> None:
-    prev_id: int | None = reserved_order.get("is_renewal_of_order")
+    prev_id: Optional[int] = reserved_order.get("is_renewal_of_order")
     if not prev_id:
         return  # No linked order → nothing to do
 
@@ -72,7 +73,7 @@ def _is_previous_order_expired(order: dict) -> bool:
     if order.get("status") == "expired":
         return True
 
-    exp_str: str | None = order.get("expires_at")
+    exp_str: Optional[str] = order.get("expires_at")
     if not exp_str:
         return False
 

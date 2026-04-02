@@ -32,7 +32,7 @@ from services.db import (
     get_order_status,
     update_last_name,
 )
-from services.runtime_settings import get_bool_setting, get_text_setting
+from services.runtime_settings import get_access_mode_setting, get_bool_setting, get_text_setting
 
 router = Router()
 
@@ -43,6 +43,14 @@ DEFAULT_RENEW_NO_SERVICES_TEXT = "⚠️ هیچ سرویسی برای تمدید
 
 def is_renew_enabled() -> bool:
     return get_bool_setting("feature_renew_enabled", default=False)
+
+
+def get_renew_access_mode() -> str:
+    return get_access_mode_setting("feature_renew_access_mode", default="funded_only")
+
+
+def is_renew_funded_only_mode() -> bool:
+    return get_renew_access_mode() == "funded_only"
 
 
 def get_membership_required_text() -> str:
@@ -310,6 +318,30 @@ def make_initial_renew_keyboard(all_plans: List[Dict]) -> Tuple[str, InlineKeybo
     return "categories", keyboard_categories(categories, prefix="renew"), None, []
 
 
+def get_min_active_plan_price(plans: List[Dict]) -> int:
+    active_plans = [p for p in plans if _is_active(p)]
+    if not active_plans:
+        return 0
+    try:
+        return min(int(p.get("price", 0) or 0) for p in active_plans)
+    except Exception:
+        return 0
+
+
+def build_plans_price_list(plans: List[Dict]) -> str:
+    active_plans = [p for p in plans if _is_active(p)]
+    if not active_plans:
+        return "در حال حاضر پلن فعالی برای تمدید موجود نیست."
+
+    lines = ["📋 لیست پلن‌های فعال تمدید:"]
+    for plan in active_plans:
+        name = plan.get("name", "بدون نام")
+        price = format_price(plan.get("price", 0))
+        lines.append(f"• {name} — {price} تومان")
+
+    return "\n".join(lines)
+
+
 # ---------------- Helpers ---------------- #
 
 async def edit_then_show_main_menu(message: Message, text: str, *, parse_mode: Optional[str] = None):
@@ -341,11 +373,33 @@ async def renew_start(message: Message, state: FSMContext):
     if not await ensure_renew_enabled_message(message, state):
         return
     user_id = message.from_user.id
+    renew_plans = get_renew_plans()
+    active_plans = [p for p in renew_plans if _is_active(p)]
     services = get_services_for_renew(user_id)
 
     last_name = message.from_user.last_name
     if last_name:
         update_last_name(user_id=user_id, last_name=last_name)
+
+    if not active_plans:
+        await state.clear()
+        return await message.answer(
+            "در حال حاضر پلن فعالی برای تمدید موجود نیست.",
+            reply_markup=user_main_menu_keyboard()
+        )
+
+    if is_renew_funded_only_mode():
+        user_balance = get_user_balance(user_id)
+        min_price = get_min_active_plan_price(active_plans)
+
+        if user_balance < min_price:
+            await state.clear()
+            plans_text = build_plans_price_list(active_plans)
+            return await message.answer(
+                "❌ در حال حاضر تمدید بسته است.\n\n"
+                f"{plans_text}",
+                reply_markup=user_main_menu_keyboard()
+            )
 
     if not services:
         return await message.answer(get_renew_no_services_text(), reply_markup=user_main_menu_keyboard())

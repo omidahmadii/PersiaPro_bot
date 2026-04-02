@@ -5,6 +5,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.types import Message, CallbackQuery
 from aiogram.types import ReplyKeyboardRemove
 from aiogram.types import User
+from typing import Optional
 
 from config import ADMINS, CHANNEL_ID
 from keyboards.main_menu import user_main_menu_keyboard, admin_main_menu_keyboard
@@ -76,7 +77,7 @@ def join_channel_keyboard():
 #  نمایش منوی اصلی
 # =======================
 
-async def show_main_menu(message: Message, actor: User | None = None):
+async def show_main_menu(message: Message, actor: Optional[User] = None):
     user = actor or message.from_user
     user_id = user.id
 
