@@ -62,8 +62,9 @@ async def auto_renew():
                 text_user = (
                     f"✅ تمدید با موفقیت انجام شد و سرویس شما فعال گردید.\n\n"
                     f"🔸 پلن: {plan_name}\n"
-                    f"👤 نام کاربری: `{order_username}`\n"
-                    f"💰 موجودی: {format_price(new_balance)} تومان"
+                    f"👤 نام کاربری: <code>{order_username}</code>\n"
+                    f"💰 موجودی: {format_price(new_balance)} تومان\n"
+                    f"⚠️ پس از اتمام حجم این سرویس، اتصال آن قطع می‌شود."
                 )
                 await _notify_user(user_id=user_id, text=text_user)
 
@@ -82,7 +83,8 @@ async def auto_renew():
                 text_user = (
                     f"✅ دوست عزیز،\n"
                     f"سرویس شما با نام کاربری <code>{order_username}</code> به صورت خودکار تمدید "
-                    f"و پس از پایان دوره‌ی فعلی به‌صورت خودکار فعال می شود.\n\n"
+                    f"و پس از پایان دوره‌ی فعلی به‌صورت خودکار فعال می شود.\n"
+                    f"⚠️ پس از اتمام حجم این سرویس، اتصال آن قطع می‌شود.\n\n"
                     f"✨ در صورت بروز هرگونه مشکل با پشتیبانی در تماس باشید."
                 )
                 await _notify_user(user_id=user_id, text=text_user)

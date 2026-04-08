@@ -5,12 +5,13 @@ import sys
 from aiogram import Dispatcher
 
 from handlers.admin import verify_transactions, temporary_charge, cards_managment, user_managment, plan_managment, \
-    reports, exec_commands, runtime_settings
+    plan_audience, reports, exec_commands, runtime_settings, accounting_transactions, user_messaging
 from handlers.shared import change_password, activate_stored
 from handlers.user import placeholder, feedback, get_cards, other_features, start, buy_service, my_services, account, \
     tutorial, contact_support, payment, renew_service, \
     FAQ, tariffs, transfer_ownership
 from config import APP_ENV, ENABLE_SCHEDULER
+from services.bot_menu import setup_bot_menu
 from services.bot_instance import bot
 from services.db import create_tables
 from services.scheduler import scheduler  # همون فایلی که تسک رو نوشتی
@@ -32,6 +33,7 @@ async def main():
         account.router,
         payment.router,
         verify_transactions.router,
+        accounting_transactions.router,
         buy_service.router,
         contact_support.router,
         tutorial.router,
@@ -41,8 +43,10 @@ async def main():
         get_cards.router,
         temporary_charge.router,
         cards_managment.router,
+        user_messaging.router,
         user_managment.router,
         plan_managment.router,
+        plan_audience.router,
         reports.router,
         runtime_settings.router,
         activate_stored.router,
@@ -58,6 +62,7 @@ async def main():
 
     # ایجاد جداول دیتابیس
     create_tables()
+    await setup_bot_menu(bot)
 
     # اجرای تسک زمان‌بندی‌شده
     logging.info("Starting bot with APP_ENV=%s, scheduler=%s", APP_ENV, "enabled" if ENABLE_SCHEDULER else "disabled")

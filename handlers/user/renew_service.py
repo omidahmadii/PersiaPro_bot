@@ -16,7 +16,7 @@ from aiogram.types import (
 )
 
 from handlers.user.start import is_user_member, join_channel_keyboard
-from keyboards.main_menu import user_main_menu_keyboard
+from keyboards.main_menu import main_menu_keyboard_for_user
 from services import IBSng
 from services.IBSng import change_group
 from services.admin_notifier import send_message_to_admins
@@ -31,6 +31,8 @@ from services.db import (
     get_active_locations_by_category,
     get_order_status,
     update_last_name,
+    get_pending_renewal_order,
+    get_order_data,
 )
 from services.runtime_settings import get_access_mode_setting, get_bool_setting, get_text_setting
 
@@ -39,6 +41,8 @@ router = Router()
 DEFAULT_MEMBERSHIP_REQUIRED_TEXT = "🔒 برای استفاده از این بخش باید عضو کانال PersiaPro باشید."
 DEFAULT_RENEW_DISABLED_TEXT = "در حال حاضر تمدید سرویس غیر فعال می باشد."
 DEFAULT_RENEW_NO_SERVICES_TEXT = "⚠️ هیچ سرویسی برای تمدید پیدا نشد."
+VOLUME_POLICY_TEXT = "ℹ️ پس از اتمام حجم سرویس، اتصال آن قطع می‌شود."
+VOLUME_POLICY_ALERT = "⚠️ پس از اتمام حجم این سرویس، اتصال آن قطع می‌شود."
 
 
 def is_renew_enabled() -> bool:
@@ -70,7 +74,7 @@ async def ensure_renew_enabled_message(message: Message, state: FSMContext) -> b
         return True
 
     await state.clear()
-    await message.answer(get_renew_disabled_text(), reply_markup=user_main_menu_keyboard())
+    await message.answer(get_renew_disabled_text(), reply_markup=main_menu_keyboard_for_user(message.from_user.id))
     return False
 
 
@@ -79,7 +83,10 @@ async def ensure_renew_enabled_callback(callback: CallbackQuery, state: FSMConte
         return True
 
     await state.clear()
-    await callback.message.answer(get_renew_disabled_text(), reply_markup=user_main_menu_keyboard())
+    await callback.message.answer(
+        get_renew_disabled_text(),
+        reply_markup=main_menu_keyboard_for_user(callback.from_user.id),
+    )
     return False
 
 
@@ -142,13 +149,13 @@ def location_label(location: Optional[str]) -> str:
 def fair_usage_label(plan: Dict) -> str:
     try:
         if int(plan.get("is_unlimited") or 0) == 1:
-            return "نامحدود (مصرف منصفانه)"
+            return "نامحدود"
     except Exception:
         pass
     vol = plan.get("volume_gb")
     if vol:
         return f"{vol} گیگ"
-    return "بدون آستانه مشخص"
+    return "بدون حجم مشخص"
 
 
 def format_price(amount: Union[int, float]) -> str:
@@ -156,6 +163,26 @@ def format_price(amount: Union[int, float]) -> str:
         return f"{int(amount):,}"
     except Exception:
         return str(amount)
+
+
+def format_created_at(created_at: Optional[str]) -> str:
+    if not created_at:
+        return "-"
+    return str(created_at).replace("T", " ")
+
+
+def build_cards_text() -> str:
+    active_cards = get_active_cards()
+    if not active_cards:
+        return ""
+
+    parts = []
+    for card in active_cards:
+        parts.append(
+            f"🏦 {card['bank_name']} به نام {card['owner_name']}\n"
+            f"<code>\u200F{card['card_number']}</code>"
+        )
+    return "\n\n".join(parts)
 
 
 def _is_active(plan: Dict) -> bool:
@@ -304,6 +331,69 @@ def keyboard_confirm(prefix: str = "renew") -> InlineKeyboardMarkup:
     ])
 
 
+def keyboard_pending_renewal_actions(service_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ لغو این تمدید", callback_data=f"renew|pending_cancel|{service_id}")],
+        [InlineKeyboardButton(text="⬅️ بازگشت", callback_data="renew|back|service")],
+    ])
+
+
+def pending_service_button_text(service: Dict[str, Any]) -> str:
+    username = str(service["username"])
+    if service.get("status") == "waiting_for_renewal_not_paid":
+        return f"{username} - در انتظار پرداخت"
+    if service.get("status") == "expired":
+        return f"{username} - منقضی"
+    return username
+
+
+def is_service_expired_now(service: Dict[str, Any]) -> bool:
+    expires_at = service.get("expires_at")
+    if not expires_at:
+        return False
+
+    try:
+        exp_greg = jdatetime.datetime.strptime(expires_at, "%Y-%m-%d %H:%M").togregorian()
+        return exp_greg < datetime.datetime.now()
+    except Exception:
+        return False
+
+
+def build_pending_renewal_text(service: Dict[str, Any], pending_order: Dict[str, Any], user_balance: int) -> str:
+    price = int(pending_order.get("price") or 0)
+    required_balance = max(price - int(user_balance or 0), 0)
+    lines = [
+        "⏳ برای این سرویس یک تمدید در انتظار پرداخت ثبت شده است.",
+        "",
+        f"👤 نام کاربری: <code>{service['username']}</code>",
+        f"📦 پلن تمدید: {pending_order.get('plan_name') or 'نامشخص'}",
+        f"💰 مبلغ تمدید: {format_price(price)} تومان",
+        f"💳 موجودی فعلی شما: {format_price(user_balance)} تومان",
+        f"🕒 زمان ثبت درخواست: {format_created_at(pending_order.get('created_at'))}",
+    ]
+
+    if required_balance > 0:
+        lines.append(f"💵 مبلغ مورد نیاز برای تکمیل: {format_price(required_balance)} تومان")
+    else:
+        lines.append("✅ موجودی فعلی شما برای این تمدید کافی است و به‌زودی خودکار اعمال می‌شود.")
+
+    lines.extend([
+        "",
+        "اگر پرداختی انجام دهید، همین تمدید برای همین سرویس اعمال می‌شود.",
+        "اگر منصرف شده‌اید، از دکمه لغو استفاده کنید.",
+    ])
+
+    cards_text = build_cards_text()
+    if required_balance > 0 and cards_text:
+        lines.extend([
+            "",
+            "برای تکمیل پرداخت می‌توانید مبلغ را به یکی از کارت‌های زیر واریز و رسید را ارسال کنید:",
+            cards_text,
+        ])
+
+    return "\n".join(lines)
+
+
 def make_initial_renew_keyboard(all_plans: List[Dict]) -> Tuple[str, InlineKeyboardMarkup, Optional[str], List[Dict]]:
     active_plans = [p for p in all_plans if _is_active(p)]
     categories_set = {normalize_category(p.get("category")) for p in active_plans}
@@ -346,7 +436,7 @@ def build_plans_price_list(plans: List[Dict]) -> str:
 
 async def edit_then_show_main_menu(message: Message, text: str, *, parse_mode: Optional[str] = None):
     await message.edit_text(text, parse_mode=parse_mode)
-    await message.answer("بازگشت به منوی اصلی", reply_markup=user_main_menu_keyboard())
+    await message.answer("بازگشت به منوی اصلی", reply_markup=main_menu_keyboard_for_user(message.chat.id))
 
 
 # ---------------- FSM States ---------------- #
@@ -360,7 +450,7 @@ class RenewStates(StatesGroup):
 
 # ---------------- Keyboards (Renew namespace) ---------------- #
 def kb_services_inline(services: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(text=str(s["username"]), callback_data=f"renew|service|{s['id']}")] for s in services]
+    rows = [[InlineKeyboardButton(text=pending_service_button_text(s), callback_data=f"renew|service|{s['id']}")] for s in services]
     # اگر می‌خواهی، می‌توانیم یک دکمه برگشت هم اضافه کنیم؛ الان نمایشی ساده است.
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -373,36 +463,24 @@ async def renew_start(message: Message, state: FSMContext):
     if not await ensure_renew_enabled_message(message, state):
         return
     user_id = message.from_user.id
-    renew_plans = get_renew_plans()
+    renew_plans = get_renew_plans(user_id=user_id)
     active_plans = [p for p in renew_plans if _is_active(p)]
     services = get_services_for_renew(user_id)
+    pending_services = [s for s in services if s.get("status") == "waiting_for_renewal_not_paid"]
 
     last_name = message.from_user.last_name
     if last_name:
         update_last_name(user_id=user_id, last_name=last_name)
 
-    if not active_plans:
+    if not active_plans and not pending_services:
         await state.clear()
         return await message.answer(
             "در حال حاضر پلن فعالی برای تمدید موجود نیست.",
-            reply_markup=user_main_menu_keyboard()
+            reply_markup=main_menu_keyboard_for_user(user_id)
         )
 
-    if is_renew_funded_only_mode():
-        user_balance = get_user_balance(user_id)
-        min_price = get_min_active_plan_price(active_plans)
-
-        if user_balance < min_price:
-            await state.clear()
-            plans_text = build_plans_price_list(active_plans)
-            return await message.answer(
-                "❌ در حال حاضر تمدید بسته است.\n\n"
-                f"{plans_text}",
-                reply_markup=user_main_menu_keyboard()
-            )
-
     if not services:
-        return await message.answer(get_renew_no_services_text(), reply_markup=user_main_menu_keyboard())
+        return await message.answer(get_renew_no_services_text(), reply_markup=main_menu_keyboard_for_user(user_id))
 
     await state.clear()
     await state.update_data(services=services)
@@ -428,12 +506,29 @@ async def renew_choose_service(callback: CallbackQuery, state: FSMContext):
 
     await state.update_data(selected_service=selected_service)
 
-    renew_plans = get_renew_plans()
+    if selected_service.get("status") == "waiting_for_renewal_not_paid":
+        pending_order = get_pending_renewal_order(selected_service["id"])
+        if not pending_order:
+            return await callback.answer("تمدید در انتظار پرداخت برای این سرویس پیدا نشد.", show_alert=True)
+
+        user_balance = get_user_balance(callback.from_user.id)
+        await state.set_state(RenewStates.choosing_service)
+        return await callback.message.edit_text(
+            build_pending_renewal_text(selected_service, pending_order, user_balance),
+            parse_mode="HTML",
+            reply_markup=keyboard_pending_renewal_actions(selected_service["id"]),
+        )
+
+    renew_plans = get_renew_plans(user_id=callback.from_user.id)
     kind, markup, only_category, plans_for_only_category = make_initial_renew_keyboard(renew_plans)
 
     if kind == "plans" and only_category == "fixed_ip":
         await state.update_data(category="fixed_ip")
-        available_locations = get_active_locations_by_category("fixed_ip")
+        available_locations = get_active_locations_by_category(
+            "fixed_ip",
+            user_id=callback.from_user.id,
+            display_context="renew",
+        )
         if not available_locations:
             return await callback.message.edit_text("❌ فعلاً لوکیشنی برای این دسته موجود نیست.")
         await state.set_state(RenewStates.choosing_location)
@@ -453,7 +548,7 @@ async def renew_choose_service(callback: CallbackQuery, state: FSMContext):
     await state.set_state(RenewStates.choosing_plan)
     text = (
         "لطفاً پلن تمدید را انتخاب کنید:\n"
-        "ℹ️ این سرویس‌ها دارای «آستانه مصرف منصفانه» هستند؛ با عبور از آستانه، سرویس قطع نمی‌شود."
+        f"{VOLUME_POLICY_TEXT}"
     )
     return await callback.message.edit_text(text, reply_markup=markup)
 
@@ -469,18 +564,22 @@ async def renew_choose_category(callback: CallbackQuery, state: FSMContext):
 
     if category in ("standard", "dual", "custom_location", "modem", "special_access"):
         plans = [
-            p for p in get_renew_plans()
+            p for p in get_renew_plans(user_id=callback.from_user.id)
             if normalize_category(p.get("category")) == category and _is_active(p)
         ]
         await state.set_state(RenewStates.choosing_plan)
         text = (
             "لطفاً پلن تمدید را انتخاب کنید:\n"
-            "ℹ️ این سرویس‌ها دارای «آستانه مصرف منصفانه» هستند؛ با عبور از آستانه، سرویس قطع نمی‌شود."
+            f"{VOLUME_POLICY_TEXT}"
         )
         return await callback.message.edit_text(text, reply_markup=keyboard_durations(plans, prefix="renew"))
 
     elif category == "fixed_ip":
-        available_locations = get_active_locations_by_category(category)
+        available_locations = get_active_locations_by_category(
+            category,
+            user_id=callback.from_user.id,
+            display_context="renew",
+        )
         if not available_locations:
             return await callback.message.edit_text("❌ فعلاً لوکیشنی برای این دسته موجود نیست.")
         await state.set_state(RenewStates.choosing_location)
@@ -502,7 +601,7 @@ async def renew_choose_location(callback: CallbackQuery, state: FSMContext):
     await state.update_data(location=location)
 
     plans = [
-        p for p in get_renew_plans()
+        p for p in get_renew_plans(user_id=callback.from_user.id)
         if p.get("location") == location and normalize_category(p.get("category")) == "fixed_ip" and _is_active(p)
     ]
     if not plans:
@@ -514,7 +613,7 @@ async def renew_choose_location(callback: CallbackQuery, state: FSMContext):
     await state.set_state(RenewStates.choosing_plan)
     text = (
         "لطفاً پلن تمدید را انتخاب کنید:\n"
-        "ℹ️ این سرویس‌ها دارای «آستانه مصرف منصفانه» هستند؛ با عبور از آستانه، سرویس قطع نمی‌شود."
+        f"{VOLUME_POLICY_TEXT}"
     )
     return await callback.message.edit_text(text,
                                             reply_markup=keyboard_durations(plans, back_to="location", prefix="renew"))
@@ -526,7 +625,7 @@ async def renew_choose_plan(callback: CallbackQuery, state: FSMContext):
     if not await ensure_renew_enabled_callback(callback, state):
         return
     _, _, plan_id = callback.data.split("|")
-    plans = get_renew_plans()
+    plans = get_renew_plans(user_id=callback.from_user.id)
     selected_plan = next((p for p in plans if str(p.get("id")) == plan_id), None)
     if not selected_plan:
         return await callback.answer("پلن معتبر نیست.", show_alert=True)
@@ -557,6 +656,7 @@ async def renew_choose_plan(callback: CallbackQuery, state: FSMContext):
         f"💰 مبلغ: {price_text} تومان",
         "",
         "ℹ️ این تمدید روی همین نام‌کاربری اعمال می‌شود و یوزرنیم/رمز جدید ساخته نمی‌شود.",
+        VOLUME_POLICY_TEXT,
         "",
         "لطفاً تایید کنید:",
     ]
@@ -610,7 +710,7 @@ async def renew_confirm_and_process(callback: CallbackQuery, state: FSMContext):
             "⚠️ این سرویس قبلاً برای تمدید ثبت شده یا هم‌اکنون تمدید شده است. "
             "اگر فکر می‌کنید اشتباه شده با پشتیبانی تماس بگیرید."
         )
-        return await callback.message.answer("بازگشت به منوی اصلی", reply_markup=user_main_menu_keyboard())
+        return await callback.message.answer("بازگشت به منوی اصلی", reply_markup=main_menu_keyboard_for_user(callback.from_user.id))
 
     if current_balance < plan_price:
 
@@ -629,23 +729,24 @@ async def renew_confirm_and_process(callback: CallbackQuery, state: FSMContext):
         )
         await send_message_to_admins(text_admin)
         required_balanace = plan_price - current_balance
-        active_cards = get_active_cards()
-        cards_text = ""
-        for card in active_cards:
-            cards_text += (
-                f"🏦 {card['bank_name']} "
-                f"به نام {card['owner_name']}\n"
-                f"<code>\u200F{card['card_number']}</code>\n\n"
-            )
+        cards_text = build_cards_text()
 
         text_user = (
-            f"⚠️ موجودی شما کافی نمی باشد.\n"
-            f" سرویس شما در وضعیت در انتظار پرداخت قرار گرفت.\n\n"
-            f"لطفا مبلغ {format_price(required_balanace)} تومان به کارت زیر واریز نموده و تصویر آن را ارسال نمایید.\n\n"
-            f"{cards_text}\n"
-            f"⚠️ پس از تایید مبلغ توسط ادمین سرویس شما فعال خواهد شد."
+            f"⏳ تمدید این سرویس ثبت شد و تا 24 ساعت در انتظار پرداخت می‌ماند.\n\n"
+            f"👤 نام کاربری: <code>{service_username}</code>\n"
+            f"📦 پلن تمدید: {plan_name}\n"
+            f"💰 مبلغ تمدید: {format_price(plan_price)} تومان\n"
+            f"💳 موجودی فعلی شما: {format_price(current_balance)} تومان\n"
+            f"💵 مبلغ مورد نیاز: {format_price(required_balanace)} تومان\n\n"
+            f"{cards_text}\n\n"
+            f"⚠️ اگر پرداختی انجام دهید، همین تمدید برای همین سرویس اعمال می‌شود.\n"
+            f"⚠️ اگر تا 24 ساعت پرداخت نکنید، این درخواست تمدید خودکار لغو می‌شود."
         )
-        await callback.message.answer(text=text_user, parse_mode="HTML", reply_markup=user_main_menu_keyboard())
+        await callback.message.answer(
+            text=text_user,
+            parse_mode="HTML",
+            reply_markup=main_menu_keyboard_for_user(callback.from_user.id),
+        )
         await state.clear()
     else:
         # کسر موجودی
@@ -675,10 +776,11 @@ async def renew_confirm_and_process(callback: CallbackQuery, state: FSMContext):
                 f"✅ تمدید با موفقیت انجام شد و سرویس شما فعال گردید.\n\n"
                 f"🔸 پلن: {plan_name}\n"
                 f"👤 نام کاربری: `{service_username}`\n"
-                f"💰 موجودی: {format_price(new_balance)} تومان",
+                f"💰 موجودی: {format_price(new_balance)} تومان\n"
+                f"{VOLUME_POLICY_ALERT}",
                 parse_mode="Markdown"
             )
-            await callback.message.answer("بازگشت به منوی اصلی", reply_markup=user_main_menu_keyboard())
+            await callback.message.answer("بازگشت به منوی اصلی", reply_markup=main_menu_keyboard_for_user(callback.from_user.id))
             await state.clear()
             return
 
@@ -698,10 +800,38 @@ async def renew_confirm_and_process(callback: CallbackQuery, state: FSMContext):
         await send_message_to_admins(text_admin)
 
         await callback.message.edit_text(
-            "✅ تمدید شما ثبت شد و پس از پایان دوره‌ی فعلی به‌صورت خودکار اعمال می‌شود."
+            "✅ تمدید شما ثبت شد و پس از پایان دوره‌ی فعلی به‌صورت خودکار اعمال می‌شود.\n\n"
+            f"{VOLUME_POLICY_ALERT}"
         )
-        await callback.message.answer("بازگشت به منوی اصلی", reply_markup=user_main_menu_keyboard())
+        await callback.message.answer("بازگشت به منوی اصلی", reply_markup=main_menu_keyboard_for_user(callback.from_user.id))
         await state.clear()
+
+
+@router.callback_query(F.data.startswith("renew|pending_cancel|"))
+async def cancel_pending_renewal(callback: CallbackQuery, state: FSMContext):
+    parts = callback.data.split("|")
+    service_id = int(parts[2])
+
+    base_service = get_order_data(service_id)
+    pending_order = get_pending_renewal_order(service_id)
+
+    if not base_service or not pending_order:
+        return await callback.answer("تمدید در انتظار پرداخت پیدا نشد.", show_alert=True)
+
+    if base_service.get("user_id") != callback.from_user.id or pending_order.get("user_id") != callback.from_user.id:
+        return await callback.answer("این تمدید برای شما نیست.", show_alert=True)
+
+    restored_status = "expired" if is_service_expired_now(base_service) else "active"
+    update_order_status(order_id=base_service["id"], new_status=restored_status)
+    update_order_status(order_id=pending_order["id"], new_status="canceled")
+
+    await state.clear()
+    await callback.message.edit_text(
+        f"✅ تمدید در انتظار پرداخت برای سرویس <code>{base_service['username']}</code> لغو شد.",
+        parse_mode="HTML",
+    )
+    await callback.message.answer("بازگشت به منوی اصلی", reply_markup=main_menu_keyboard_for_user(callback.from_user.id))
+    await callback.answer("تمدید لغو شد.")
 
 
 # ---------------- Back Navigation ---------------- #
@@ -721,7 +851,7 @@ async def renew_go_back(callback: CallbackQuery, state: FSMContext):
         )
 
     if target == "category":
-        all_plans = get_renew_plans()
+        all_plans = get_renew_plans(user_id=callback.from_user.id)
         kind, markup, only_category, _ = make_initial_renew_keyboard(all_plans)
         if kind == "categories":
             await state.set_state(RenewStates.choosing_category)
@@ -732,7 +862,11 @@ async def renew_go_back(callback: CallbackQuery, state: FSMContext):
         else:
             if only_category == "fixed_ip":
                 await state.update_data(category="fixed_ip")
-                available_locations = get_active_locations_by_category("fixed_ip")
+                available_locations = get_active_locations_by_category(
+                    "fixed_ip",
+                    user_id=callback.from_user.id,
+                    display_context="renew",
+                )
                 if not available_locations:
                     return await callback.message.edit_text("❌ فعلاً لوکیشنی برای این دسته موجود نیست.")
                 await state.set_state(RenewStates.choosing_location)
@@ -744,14 +878,18 @@ async def renew_go_back(callback: CallbackQuery, state: FSMContext):
             await state.set_state(RenewStates.choosing_plan)
             text = (
                 "لطفاً پلن تمدید را انتخاب کنید:\n"
-                "ℹ️ این سرویس‌ها دارای «آستانه مصرف منصفانه» هستند؛ با عبور از آستانه، سرویس قطع نمی‌شود."
+                f"{VOLUME_POLICY_TEXT}"
             )
             return await callback.message.edit_text(text, reply_markup=markup)
 
     if target == "location":
         category = data.get("category") or "fixed_ip"
         await state.set_state(RenewStates.choosing_location)
-        available_locations = get_active_locations_by_category(category)
+        available_locations = get_active_locations_by_category(
+            category,
+            user_id=callback.from_user.id,
+            display_context="renew",
+        )
         if not available_locations:
             return await callback.message.edit_text("❌ فعلاً لوکیشنی برای این دسته موجود نیست.")
         return await callback.message.edit_text(
@@ -772,32 +910,32 @@ async def renew_go_back(callback: CallbackQuery, state: FSMContext):
 
         if category in ("standard", "dual", "custom_location", "modem", "special_access"):
             plans = [
-                p for p in get_renew_plans()
+                p for p in get_renew_plans(user_id=callback.from_user.id)
                 if normalize_category(p.get("category")) == category and _is_active(p)
             ]
             await state.set_state(RenewStates.choosing_plan)
             text = (
                 "لطفاً پلن تمدید را انتخاب کنید:\n"
-                "ℹ️ این سرویس‌ها دارای «آستانه مصرف منصفانه» هستند؛ با عبور از آستانه، سرویس قطع نمی‌شود."
+                f"{VOLUME_POLICY_TEXT}"
             )
             return await callback.message.edit_text(text, reply_markup=keyboard_durations(plans, prefix="renew"))
 
         elif category == "fixed_ip" and location:
             plans = [
-                p for p in get_renew_plans()
+                p for p in get_renew_plans(user_id=callback.from_user.id)
                 if
                 p.get("location") == location and normalize_category(p.get("category")) == "fixed_ip" and _is_active(p)
             ]
             await state.set_state(RenewStates.choosing_plan)
             text = (
                 "لطفاً پلن تمدید را انتخاب کنید:\n"
-                "ℹ️ این سرویس‌ها دارای «آستانه مصرف منصفانه» هستند؛ با عبور از آستانه، سرویس قطع نمی‌شود."
+                f"{VOLUME_POLICY_TEXT}"
             )
             return await callback.message.edit_text(text, reply_markup=keyboard_durations(plans, back_to="location",
                                                                                           prefix="renew"))
 
         # fallback به ورودی
-        all_plans = get_renew_plans()
+        all_plans = get_renew_plans(user_id=callback.from_user.id)
         kind, markup, only_category, _ = make_initial_renew_keyboard(all_plans)
         if kind == "categories":
             await state.set_state(RenewStates.choosing_category)
@@ -808,7 +946,11 @@ async def renew_go_back(callback: CallbackQuery, state: FSMContext):
         else:
             if only_category == "fixed_ip":
                 await state.update_data(category="fixed_ip")
-                available_locations = get_active_locations_by_category("fixed_ip")
+                available_locations = get_active_locations_by_category(
+                    "fixed_ip",
+                    user_id=callback.from_user.id,
+                    display_context="renew",
+                )
                 if not available_locations:
                     return await callback.message.edit_text("❌ فعلاً لوکیشنی برای این دسته موجود نیست.")
                 await state.set_state(RenewStates.choosing_location)
@@ -820,7 +962,7 @@ async def renew_go_back(callback: CallbackQuery, state: FSMContext):
             await state.set_state(RenewStates.choosing_plan)
             text = (
                 "لطفاً پلن تمدید را انتخاب کنید:\n"
-                "ℹ️ این سرویس‌ها دارای «آستانه مصرف منصفانه» هستند؛ با عبور از آستانه، سرویس قطع نمی‌شود."
+                f"{VOLUME_POLICY_TEXT}"
             )
             return await callback.message.edit_text(text, reply_markup=markup)
     return

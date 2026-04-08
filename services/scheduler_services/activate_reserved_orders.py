@@ -89,7 +89,8 @@ def _notify_user_activation(reserved_order: dict, duration_months: int) -> None:
 
     msg = (
         f"✅ دوست عزیز،\n"
-        f"سرویس رزرو شما با نام کاربری <code>{username}</code>  با موفقیت فعال شد.\n\n"
+        f"سرویس رزرو شما با نام کاربری <code>{username}</code> با موفقیت فعال شد.\n"
+        f"⚠️ پس از اتمام حجم این سرویس، اتصال آن قطع می‌شود.\n\n"
         f"✨ در صورت بروز هرگونه مشکل با پشتیبانی در تماس باشید."
     )
 

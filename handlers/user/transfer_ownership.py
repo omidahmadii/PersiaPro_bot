@@ -3,7 +3,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 
-from keyboards.main_menu import admin_main_menu_keyboard, user_main_menu_keyboard
+from keyboards.main_menu import main_menu_keyboard_for_user
 from services.bot_instance import bot
 from services.admin_notifier import send_message_to_admins
 from services.db import (
@@ -63,7 +63,7 @@ async def start_transfer_ownership(message: Message, state: FSMContext):
     if not user:
         await message.answer(
             "اطلاعات حساب شما در سیستم پیدا نشد.",
-            reply_markup=user_main_menu_keyboard()
+            reply_markup=main_menu_keyboard_for_user(from_user_id)
         )
         return
 
@@ -71,7 +71,7 @@ async def start_transfer_ownership(message: Message, state: FSMContext):
     if not usernames:
         await message.answer(
             "شما هیچ اکانتی برای انتقال ندارید.",
-            reply_markup=user_main_menu_keyboard()
+            reply_markup=main_menu_keyboard_for_user(from_user_id)
         )
         return
 
@@ -92,7 +92,7 @@ async def cancel_transfer_callback(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("عملیات انتقال لغو شد.")
     await callback.message.answer(
         "به منوی اصلی برگشتید.",
-        reply_markup=user_main_menu_keyboard()
+        reply_markup=main_menu_keyboard_for_user(callback.from_user.id)
     )
     await callback.answer()
 
@@ -107,7 +107,7 @@ async def select_username_callback(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text("اطلاعات عملیات منقضی شده. لطفا دوباره تلاش کنید.")
         await callback.message.answer(
             "به منوی اصلی برگشتید.",
-            reply_markup=user_main_menu_keyboard()
+            reply_markup=main_menu_keyboard_for_user(callback.from_user.id)
         )
         await callback.answer()
         return
@@ -163,7 +163,7 @@ async def receive_target_user_id(message: Message, state: FSMContext):
         await state.clear()
         await message.answer(
             "اطلاعات عملیات ناقص است. لطفا دوباره تلاش کنید.",
-            reply_markup=user_main_menu_keyboard()
+            reply_markup=main_menu_keyboard_for_user(message.from_user.id)
         )
         return
 
@@ -176,7 +176,7 @@ async def receive_target_user_id(message: Message, state: FSMContext):
         await state.clear()
         await message.answer(
             "اطلاعات حساب شما در سیستم پیدا نشد.",
-            reply_markup=user_main_menu_keyboard()
+            reply_markup=main_menu_keyboard_for_user(message.from_user.id)
         )
         return
 
@@ -221,7 +221,7 @@ async def confirm_transfer_callback(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text("اطلاعات انتقال ناقص است. لطفا دوباره تلاش کنید.")
         await callback.message.answer(
             "به منوی اصلی برگشتید.",
-            reply_markup=user_main_menu_keyboard()
+            reply_markup=main_menu_keyboard_for_user(callback.from_user.id)
         )
         await callback.answer()
         return
@@ -237,7 +237,7 @@ async def confirm_transfer_callback(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text(f"انتقال انجام نشد.\n{error}")
         await callback.message.answer(
             "به منوی اصلی برگشتید.",
-            reply_markup=user_main_menu_keyboard()
+            reply_markup=main_menu_keyboard_for_user(callback.from_user.id)
         )
         await callback.answer()
         return
@@ -289,7 +289,7 @@ async def confirm_transfer_callback(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.answer(
         "به منوی اصلی برگشتید.",
-        reply_markup=user_main_menu_keyboard()
+        reply_markup=main_menu_keyboard_for_user(callback.from_user.id)
     )
     await callback.answer()
 

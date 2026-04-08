@@ -1,29 +1,98 @@
 from datetime import datetime, timedelta
 from typing import Optional
 
+import jdatetime
+import requests
+
+from config import BOT_TOKEN
 from services.db import (
-    get_waiting_for_payment_orders, update_order_status
+    get_waiting_for_payment_orders,
+    update_order_status,
+    get_order_data,
+    release_account_by_username,
+    get_plan_name,
 )
+
+PENDING_PAYMENT_TIMEOUT = timedelta(hours=24)
 
 
 def cancel_not_paid_waiting_for_payment_orders() -> None:
     for waiting_for_payment in get_waiting_for_payment_orders():
-        _maybe_not_payed(waiting_for_payment)
+        _maybe_cancel_not_paid(waiting_for_payment)
 
 
-def _maybe_not_payed(waiting_for_payment: dict) -> None:
-    created_at = waiting_for_payment['created_at']
-    # تبدیل رشته به datetime
+def _maybe_cancel_not_paid(waiting_for_payment: dict) -> None:
+    created_at = waiting_for_payment.get("created_at")
+    if not created_at:
+        return
+
     created_time = datetime.fromisoformat(created_at)
-
-    # زمان فعلی
     now = datetime.now()
+    if now - created_time <= PENDING_PAYMENT_TIMEOUT:
+        return
 
-    # چک کنیم آیا بیشتر از 3 روز گذشته
-    if now - created_time > timedelta(days=3):
-        order_id = waiting_for_payment['id']
-        previous: Optional[int] = waiting_for_payment.get("is_renewal_of_order")
-        if not previous:
-            return  # No linked order → nothing to do
-        update_order_status(order_id=previous, new_status="active")
+    order_id = waiting_for_payment["id"]
+    previous_id: Optional[int] = waiting_for_payment.get("is_renewal_of_order")
+
+    if previous_id:
+        previous = get_order_data(previous_id)
+        if previous:
+            restored_status = "expired" if _is_order_expired(previous) else "active"
+            update_order_status(order_id=previous_id, new_status=restored_status)
         update_order_status(order_id=order_id, new_status="canceled")
+        _notify_user_pending_renewal_canceled(waiting_for_payment)
+        return
+
+    release_account_by_username(str(waiting_for_payment["username"]))
+    update_order_status(order_id=order_id, new_status="canceled")
+    _notify_user_pending_purchase_canceled(waiting_for_payment)
+
+
+def _is_order_expired(order: dict) -> bool:
+    expires_at = order.get("expires_at")
+    if not expires_at:
+        return False
+
+    try:
+        exp_greg = jdatetime.datetime.strptime(expires_at, "%Y-%m-%d %H:%M").togregorian()
+        return exp_greg < datetime.now()
+    except Exception:
+        return False
+
+
+def _send_notification(user_id: int, text: str) -> None:
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    data = {
+        "chat_id": user_id,
+        "text": text,
+        "parse_mode": "HTML",
+    }
+    response = requests.post(url, data=data, timeout=15)
+    if not response.ok:
+        raise Exception(f"Telegram API error: {response.text}")
+
+
+def _notify_user_pending_purchase_canceled(order: dict) -> None:
+    plan_name = get_plan_name(order.get("plan_id"))
+    text = (
+        f"⌛️ سفارش خرید شما برای پلن {plan_name} با نام کاربری <code>{order['username']}</code> "
+        f"به دلیل عدم پرداخت در 24 ساعت گذشته لغو شد.\n\n"
+        f"اکانت رزروشده دوباره آزاد شد و در صورت نیاز می‌توانید دوباره خرید را ثبت کنید."
+    )
+    try:
+        _send_notification(order["user_id"], text)
+    except Exception as e:
+        print(f"[!] failed to notify canceled purchase order_id={order['id']}: {e}")
+
+
+def _notify_user_pending_renewal_canceled(order: dict) -> None:
+    plan_name = get_plan_name(order.get("plan_id"))
+    text = (
+        f"⌛️ درخواست تمدید شما برای سرویس <code>{order['username']}</code> "
+        f"و پلن {plan_name} به دلیل عدم پرداخت در 24 ساعت گذشته لغو شد.\n\n"
+        f"در صورت نیاز می‌توانید دوباره از بخش تمدید سرویس اقدام کنید."
+    )
+    try:
+        _send_notification(order["user_id"], text)
+    except Exception as e:
+        print(f"[!] failed to notify canceled renewal order_id={order['id']}: {e}")

@@ -185,9 +185,9 @@ def change_password(username, password):
         'has_normal_username': 't',
         'current_normal_username': username,
         'normal_username': username,
-        'password_character': 't',
+        'password_character': 'f',
         'password_digit': 't',
-        'password_len': '6',
+        'password_len': str(max(len(str(password or "")), 4)),
         'password': password
     }
     response = session.post(edit_url, data=payload)
@@ -196,6 +196,7 @@ def change_password(username, password):
     else:
         print("Failed to Change Password.")
         print("Status code:", response.status_code)
+    return bool(response.ok)
 
 
 def lock_user(username):

@@ -1,6 +1,7 @@
 from aiogram import Router, F
 from aiogram.enums import ChatMemberStatus
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.types import Message, CallbackQuery
 from aiogram.types import ReplyKeyboardRemove
@@ -103,7 +104,7 @@ async def show_main_menu(message: Message, actor: Optional[User] = None):
 #  /start
 # =======================
 
-@router.message(F.text == "/start")
+@router.message(Command("start", "restart"))
 async def cmd_start(message: Message):
     user_id = message.from_user.id
 

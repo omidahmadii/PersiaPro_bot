@@ -13,7 +13,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
 )
-from keyboards.main_menu import user_main_menu_keyboard
+from keyboards.main_menu import main_menu_keyboard_for_user
 from services import IBSng
 from services.admin_notifier import send_message_to_admins
 from services.db import (
@@ -60,7 +60,7 @@ async def activate_start(message: Message, state: FSMContext):
     if not services:
         return await message.answer(
             "⚠️ هیچ سرویسی در وضعیت ذخیره یافت نشد.",
-            reply_markup=user_main_menu_keyboard()
+            reply_markup=main_menu_keyboard_for_user(user_id)
         )
 
     await state.clear()
@@ -120,7 +120,7 @@ async def activate_confirm(callback: CallbackQuery, state: FSMContext):
         await state.clear()
         return await callback.message.edit_text(
             "❌ خطا در دریافت اطلاعات. لطفاً دوباره تلاش کنید.",
-            reply_markup=user_main_menu_keyboard()
+            reply_markup=main_menu_keyboard_for_user(callback.from_user.id)
         )
 
     service_id = selected_service["id"]
@@ -151,7 +151,7 @@ async def activate_confirm(callback: CallbackQuery, state: FSMContext):
         f"✅ سرویس `{username}` با موفقیت فعال شد.",
         parse_mode="Markdown"
     )
-    await callback.message.answer("بازگشت به منوی اصلی", reply_markup=user_main_menu_keyboard())
+    await callback.message.answer("بازگشت به منوی اصلی", reply_markup=main_menu_keyboard_for_user(callback.from_user.id))
     await state.clear()
 
 
@@ -160,5 +160,5 @@ async def activate_cancel(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.edit_text(
         "❌ عملیات فعال‌سازی لغو شد.",
-        reply_markup=user_main_menu_keyboard()
+        reply_markup=main_menu_keyboard_for_user(callback.from_user.id)
     )

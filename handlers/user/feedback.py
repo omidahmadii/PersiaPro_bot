@@ -6,7 +6,7 @@ from datetime import datetime
 from asyncio import create_task, sleep
 
 from config import ADMINS
-from keyboards.main_menu import user_main_menu_keyboard
+from keyboards.main_menu import main_menu_keyboard_for_user
 from services.bot_instance import bot
 from services.db import insert_feedback
 
@@ -49,7 +49,10 @@ async def start_feedback(msg: Message, state: FSMContext):
 async def cancel_feedback(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.edit_text("از بخش بازخورد خارج شدید. ✅")
-    # در صورت نیاز، منوی اصلی رو با کیبورد معمولی می‌تونی اینجا بفرستی
+    await callback.message.answer(
+        "بازگشت به منوی اصلی",
+        reply_markup=main_menu_keyboard_for_user(callback.from_user.id),
+    )
 
 
 # انتخاب نوع بازخورد
@@ -83,5 +86,8 @@ async def receive_feedback_message(msg: Message, state: FSMContext):
                                f"نوع: {'پیشنهاد' if feedback_type == 'suggestion' else 'انتقاد'}\n"
                                f"از: {msg.from_user.full_name}\n\n{message}")
 
-    await msg.answer("✅ بازخورد شما با موفقیت ثبت شد. ممنون از همراهی‌تون!", reply_markup=user_main_menu_keyboard())
+    await msg.answer(
+        "✅ بازخورد شما با موفقیت ثبت شد. ممنون از همراهی‌تون!",
+        reply_markup=main_menu_keyboard_for_user(msg.from_user.id),
+    )
     await state.clear()

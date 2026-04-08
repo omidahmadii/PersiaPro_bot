@@ -11,6 +11,7 @@ from config import (
     SCHEDULER_LIMIT_SPEED,
     SCHEDULER_MEMBERSHIP,
     SCHEDULER_NOTIFIER,
+    SCHEDULER_USAGE_NOTIFIER,
     SCHEDULER_UPDATE_ORDER_TIMES,
     SCHEDULER_USAGE_LOGGER,
 )
@@ -19,11 +20,12 @@ from services.scheduler_services.activate_reserved_orders import activate_reserv
 from services.scheduler_services.activate_waiting_for_payment_orders import activate_waiting_for_payment_orders
 from services.scheduler_services.cancel_not_paid_waiting_for_payment_orders import \
     cancel_not_paid_waiting_for_payment_orders
-from services.db import expire_old_orders, archive_old_orders, expire_old_order_usages, archive_old_order_usages
+from services.db import expire_old_orders, archive_old_orders
 from services.db import get_active_orders_without_time, update_order_starts_at, update_order_expires_at
 from services.scheduler_services.limit_speed import limit_speed
 from services.scheduler_services.membership import check_membership
 from services.scheduler_services.notifier import notifier
+from services.scheduler_services.usage_notifier import notify_usage_thresholds
 from services.scheduler_services.usage_logger import log_usage
 from services.scheduler_services.auto_renew import auto_renew
 
@@ -55,8 +57,6 @@ async def expire_orders_loop():
         try:
             await asyncio.to_thread(expire_old_orders)
             await asyncio.to_thread(archive_old_orders)
-            await asyncio.to_thread(expire_old_order_usages)
-            await asyncio.to_thread(archive_old_order_usages)
         except Exception as e:
             print(f"خطا در expire کردن سفارش‌ها: {e}")
         print("Expire orders loop finished.")
@@ -88,7 +88,16 @@ async def log_usage_loop():
             await asyncio.to_thread(log_usage)
         except Exception as e:
             print(f"خطا در ثبت مصرف کاربر: {e}")
-        await asyncio.sleep(60 * 60)
+        await asyncio.sleep(1 * 60)
+
+
+async def usage_notifier_loop():
+    while True:
+        try:
+            await asyncio.to_thread(notify_usage_thresholds)
+        except Exception as e:
+            print(f"خطا در ارسال هشدار مصرف حجم: {e}")
+        await asyncio.sleep(5 * 60)
 
 
 async def check_membership_loop():
@@ -105,10 +114,10 @@ async def limit_speed_loop():
     while True:
         try:
             await asyncio.to_thread(limit_speed)
-
+            print("limit speed loop Finished.")
         except Exception as e:
             print("Error during scheduler:", e)
-        await asyncio.sleep(60 * 60 * 1)  # هر 24 ساعت
+        await asyncio.sleep(30 * 60)
 
 
 async def activate_waiting_for_payment_orders_loop():
@@ -153,6 +162,7 @@ async def scheduler():
         ("activate_reserved_orders", SCHEDULER_ACTIVATE_RESERVED, activate_reserved_orders_loop),
         ("expire_orders", SCHEDULER_EXPIRE_ORDERS, expire_orders_loop),
         ("usage_logger", SCHEDULER_USAGE_LOGGER, log_usage_loop),
+        ("usage_notifier", SCHEDULER_USAGE_NOTIFIER, usage_notifier_loop),
         ("membership", SCHEDULER_MEMBERSHIP, check_membership_loop),
         ("limit_speed", SCHEDULER_LIMIT_SPEED, limit_speed_loop),
         ("activate_waiting_for_payment", SCHEDULER_ACTIVATE_WAITING_FOR_PAYMENT, activate_waiting_for_payment_orders_loop),

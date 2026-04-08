@@ -2,7 +2,7 @@ from aiogram import Router
 from aiogram.types import Message
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
-from keyboards.main_menu import user_main_menu_keyboard
+from keyboards.main_menu import main_menu_keyboard_for_user
 
 router = Router()
 
@@ -11,5 +11,5 @@ router = Router()
 async def unknown_message_handler(message: Message, state: FSMContext):
     await message.answer(
         "❓ دستور نامعتبر است. لطفاً از دکمه‌های موجود استفاده کنید.",
-        reply_markup=user_main_menu_keyboard()
+        reply_markup=main_menu_keyboard_for_user(message.from_user.id)
     )

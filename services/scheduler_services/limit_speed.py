@@ -141,7 +141,7 @@ def get_orders_for_limitation():
                 usage_applied_speed,
                 status
             FROM orders
-            WHERE status = 'active'
+            WHERE status IN ('active', 'waiting_for_renewal', 'waiting_for_renewal_not_paid')
         """)
         rows = cur.fetchall()
 

@@ -10,7 +10,8 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKe
 
 from config import ADMINS
 from handlers.user.start import is_user_member, join_channel_keyboard
-from keyboards.main_menu import user_main_menu_keyboard
+from keyboards.main_menu import main_menu_keyboard_for_user
+from services.admin_notifier import send_message_to_admins
 from services.IBSng import change_group
 from services.db import (
     ensure_user_exists,
@@ -24,7 +25,11 @@ from services.db import (
     get_active_locations_by_category,
     update_last_name, get_active_cards,
     count_user_active_orders,
-    get_user_max_active_accounts
+    get_user_max_active_accounts,
+    get_user_pending_purchase_orders,
+    get_order_data,
+    release_account_by_username,
+    update_order_status,
 )
 from services.runtime_settings import get_access_mode_setting, get_bool_setting, get_text_setting
 
@@ -33,6 +38,8 @@ router = Router()
 DEFAULT_MEMBERSHIP_REQUIRED_TEXT = "🔒 برای استفاده از این بخش باید عضو کانال PersiaPro باشید."
 DEFAULT_BUY_DISABLED_TEXT = "در حال حاضر فروش سرویس جدید غیر فعال می باشد."
 DEFAULT_BUY_NO_ACTIVE_PLANS_TEXT = "در حال حاضر پلن فعالی برای فروش موجود نیست."
+VOLUME_POLICY_TEXT = "ℹ️ پس از اتمام حجم سرویس، اتصال آن قطع می‌شود."
+VOLUME_POLICY_ALERT = "⚠️ پس از اتمام حجم این سرویس، اتصال آن قطع می‌شود."
 
 
 def is_buy_enabled() -> bool:
@@ -64,7 +71,7 @@ async def ensure_buy_enabled_message(message: Message, state: FSMContext) -> boo
         return True
 
     await state.clear()
-    await message.answer(get_buy_disabled_text(), reply_markup=user_main_menu_keyboard())
+    await message.answer(get_buy_disabled_text(), reply_markup=main_menu_keyboard_for_user(message.from_user.id))
     return False
 
 
@@ -73,7 +80,10 @@ async def ensure_buy_enabled_callback(callback: CallbackQuery, state: FSMContext
         return True
 
     await state.clear()
-    await callback.message.answer(get_buy_disabled_text(), reply_markup=user_main_menu_keyboard())
+    await callback.message.answer(
+        get_buy_disabled_text(),
+        reply_markup=main_menu_keyboard_for_user(callback.from_user.id),
+    )
     return False
 
 
@@ -135,13 +145,13 @@ def location_label(location: Optional[str]) -> str:
 def fair_usage_label(plan: Dict) -> str:
     try:
         if int(plan.get("is_unlimited") or 0) == 1:
-            return "نامحدود (مصرف منصفانه)"
+            return "نامحدود"
     except Exception:
         pass
     vol = plan.get("volume_gb")
     if vol:
         return f"{vol} گیگ"
-    return "بدون آستانه مشخص"
+    return "بدون حجم مشخص"
 
 
 def format_price(amount: Union[int, float]) -> str:
@@ -149,6 +159,62 @@ def format_price(amount: Union[int, float]) -> str:
         return f"{int(amount):,}"
     except Exception:
         return str(amount)
+
+
+def format_created_at(created_at: Optional[str]) -> str:
+    if not created_at:
+        return "-"
+    return str(created_at).replace("T", " ")
+
+
+def build_cards_text() -> str:
+    active_cards = get_active_cards()
+    if not active_cards:
+        return ""
+
+    parts = []
+    for card in active_cards:
+        parts.append(
+            f"🏦 {card['bank_name']} به نام {card['owner_name']}\n"
+            f"<code>\u200F{card['card_number']}</code>"
+        )
+    return "\n\n".join(parts)
+
+
+def build_pending_purchase_text(pending_orders: List[Dict], user_balance: int) -> str:
+    lines = [
+        "⏳ شما یک خرید در انتظار پرداخت دارید.",
+        "تا زمانی که این سفارش را پرداخت یا لغو نکنید، خرید جدید ثبت نمی‌شود.",
+        "",
+    ]
+
+    for order in pending_orders:
+        price = int(order.get("price") or 0)
+        required_balance = max(price - int(user_balance or 0), 0)
+        lines.extend([
+            f"🆔 سفارش: {order['id']}",
+            f"🔸 پلن: {order.get('plan_name') or 'نامشخص'}",
+            f"👤 نام کاربری رزروشده: <code>{order['username']}</code>",
+            f"💰 مبلغ سرویس: {format_price(price)} تومان",
+            f"💳 موجودی فعلی شما: {format_price(user_balance)} تومان",
+            f"🕒 زمان ثبت: {format_created_at(order.get('created_at'))}",
+        ])
+        if required_balance > 0:
+            lines.append(f"💵 مبلغ مورد نیاز برای تکمیل: {format_price(required_balance)} تومان")
+        else:
+            lines.append("✅ موجودی فعلی شما برای این سفارش کافی است و به‌زودی خودکار فعال می‌شود.")
+        lines.append("")
+
+    cards_text = build_cards_text()
+    if cards_text:
+        lines.extend([
+            "برای تکمیل پرداخت می‌توانید مبلغ را به یکی از کارت‌های زیر واریز و رسید را ارسال کنید:",
+            cards_text,
+            "",
+        ])
+
+    lines.append("اگر منصرف شده‌اید، از دکمه لغو همین سفارش استفاده کنید.")
+    return "\n".join(lines)
 
 
 def _is_active(plan: Dict) -> bool:
@@ -296,6 +362,18 @@ def keyboard_confirm() -> InlineKeyboardMarkup:
     ])
 
 
+def keyboard_pending_purchase_actions(pending_orders: List[Dict]) -> InlineKeyboardMarkup:
+    rows = []
+    for order in pending_orders:
+        rows.append([
+            InlineKeyboardButton(
+                text=f"❌ لغو خرید {order['username']}",
+                callback_data=f"buy|pending_cancel|{order['id']}"
+            )
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def make_initial_buy_keyboard(all_plans: List[Dict]) -> Tuple[str, InlineKeyboardMarkup, Optional[str], List[Dict]]:
     active_plans = [p for p in all_plans if _is_active(p)]
     categories_set = {normalize_category(p.get("category")) for p in active_plans}
@@ -337,12 +415,13 @@ def build_plans_price_list(plans: List[Dict]) -> str:
 
 async def edit_then_show_main_menu(
         message: Message,
+        user_id: int,
         text: str,
         *,
         parse_mode: Optional[str] = None
 ):
     await message.edit_text(text, parse_mode=parse_mode)
-    await message.answer("بازگشت به منوی اصلی", reply_markup=user_main_menu_keyboard())
+    await message.answer("بازگشت به منوی اصلی", reply_markup=main_menu_keyboard_for_user(user_id))
 
 
 # ---------------- FSM States ---------------- #
@@ -375,6 +454,16 @@ async def start_buy(message: Message, state: FSMContext):
     if not ensure_user_exists(user_id=user_id):
         add_user(user_id, first_name, username, role)
 
+    pending_purchase_orders = get_user_pending_purchase_orders(user_id)
+    if pending_purchase_orders:
+        await state.clear()
+        user_balance = get_user_balance(user_id)
+        return await message.answer(
+            build_pending_purchase_text(pending_purchase_orders, user_balance),
+            parse_mode="HTML",
+            reply_markup=keyboard_pending_purchase_actions(pending_purchase_orders),
+        )
+
     active_orders_count = count_user_active_orders(user_id)
     max_active_accounts = get_user_max_active_accounts(user_id)
 
@@ -385,33 +474,18 @@ async def start_buy(message: Message, state: FSMContext):
             f"شما هم‌اکنون {active_orders_count} اکانت فعال دارید.\n"
             f"📌 سقف مجاز خرید برای شما: {max_active_accounts} اکانت\n\n"
             "برای خرید مجدد، ابتدا باید یکی از اکانت‌های فعال شما آزاد شود.",
-            reply_markup=user_main_menu_keyboard()
+            reply_markup=main_menu_keyboard_for_user(user_id)
         )
 
-    buy_plans = get_buy_plans()
+    buy_plans = get_buy_plans(user_id=user_id)
     active_plans = [p for p in buy_plans if _is_active(p)]
 
     if not active_plans:
         await state.clear()
         return await message.answer(
             get_buy_no_active_plans_text(),
-            reply_markup=user_main_menu_keyboard()
+            reply_markup=main_menu_keyboard_for_user(user_id)
         )
-
-    if is_buy_funded_only_mode():
-        user_balance = get_user_balance(user_id)
-        min_price = get_min_active_plan_price(active_plans)
-
-        if user_balance < min_price:
-            await state.clear()
-
-            plans_text = build_plans_price_list(active_plans)
-
-            return await message.answer(
-                "❌ در حال حاضر فروش بسته است.\n\n"
-                f"{plans_text}",
-                reply_markup=user_main_menu_keyboard()
-            )
 
     kind, markup, only_category, _plans_for_only_category = make_initial_buy_keyboard(active_plans)
 
@@ -429,8 +503,7 @@ async def start_buy(message: Message, state: FSMContext):
         "🚨 توجه قبل از خرید\n"
         f"حداکثر تعداد اکانت فعال مجاز برای شما: {max_active_accounts} عدد\n"
         f"📦 تعداد اکانت فعال فعلی شما: {active_orders_count} عدد\n\n"
-        "ℹ️ این سرویس‌ها دارای «آستانه مصرف منصفانه» هستند؛ "
-        "با عبور از آستانه، سرویس قطع نمی‌شود."
+        f"{VOLUME_POLICY_TEXT}"
     )
     await message.answer(text, reply_markup=markup)
 
@@ -446,7 +519,7 @@ async def choose_category(callback: CallbackQuery, state: FSMContext):
     await state.update_data(category=category)
 
     plans = [
-        p for p in get_buy_plans()
+        p for p in get_buy_plans(user_id=callback.from_user.id)
         if normalize_category(p.get("category")) == category and _is_active(p)
     ]
 
@@ -454,12 +527,16 @@ async def choose_category(callback: CallbackQuery, state: FSMContext):
         await state.set_state(BuyServiceStates.choosing_duration)
         text = (
             "مدت زمان سرویس را انتخاب کنید:\n"
-            "ℹ️ این سرویس‌ها دارای «آستانه مصرف منصفانه» هستند؛ با عبور از آستانه، سرویس قطع نمی‌شود."
+            f"{VOLUME_POLICY_TEXT}"
         )
         return await callback.message.edit_text(text, reply_markup=keyboard_durations(plans))
 
     elif category == "fixed_ip":
-        available_locations = get_active_locations_by_category(category)
+        available_locations = get_active_locations_by_category(
+            category,
+            user_id=callback.from_user.id,
+            display_context="purchase",
+        )
         if not available_locations:
             return await callback.message.edit_text("❌ فعلاً لوکیشنی برای این دسته موجود نیست.")
         await state.set_state(BuyServiceStates.choosing_location)
@@ -482,7 +559,7 @@ async def choose_location(callback: CallbackQuery, state: FSMContext):
     await state.update_data(location=location)
 
     plans = [
-        p for p in get_buy_plans()
+        p for p in get_buy_plans(user_id=callback.from_user.id)
         if p.get("location") == location
            and normalize_category(p.get("category")) == "fixed_ip"
            and _is_active(p)
@@ -491,7 +568,7 @@ async def choose_location(callback: CallbackQuery, state: FSMContext):
     await state.set_state(BuyServiceStates.choosing_duration)
     text = (
         "مدت زمان سرویس را انتخاب کنید:\n"
-        "ℹ️ این سرویس‌ها دارای «آستانه مصرف منصفانه» هستند؛ با عبور از آستانه، سرویس قطع نمی‌شود."
+        f"{VOLUME_POLICY_TEXT}"
     )
     await callback.message.edit_text(text, reply_markup=keyboard_durations(plans, back_to="location"))
 
@@ -503,7 +580,7 @@ async def choose_duration(callback: CallbackQuery, state: FSMContext):
     if not await ensure_buy_enabled_callback(callback, state):
         return
     _, _, plan_id = callback.data.split("|")
-    plans = get_buy_plans()
+    plans = get_buy_plans(user_id=callback.from_user.id)
     selected_plan = next((p for p in plans if str(p.get("id")) == plan_id), None)
 
     if not selected_plan:
@@ -531,7 +608,7 @@ async def choose_duration(callback: CallbackQuery, state: FSMContext):
         f"📅 مدت زمان: {selected_plan['name']}",
         f"💰 مبلغ: {price_text} تومان",
         "",
-        "ℹ️ توجه: «مصرف منصفانه» به معنی قطع سرویس بعد از اتمام نیست.",
+        VOLUME_POLICY_TEXT,
         "",
         "لطفاً تایید کنید:",
     ]
@@ -549,39 +626,79 @@ async def confirm_and_create(callback: CallbackQuery, state: FSMContext):
 
     if not plan:
         await state.clear()
-        return await edit_then_show_main_menu(callback.message, "خطا در دریافت اطلاعات پلن. دوباره تلاش کنید.")
+        return await edit_then_show_main_menu(callback.message, callback.from_user.id, "خطا در دریافت اطلاعات پلن. دوباره تلاش کنید.")
 
     user_id = callback.from_user.id
     first_name = callback.from_user.first_name
     last_name = callback.from_user.last_name
 
+    pending_purchase_orders = get_user_pending_purchase_orders(user_id)
+    if pending_purchase_orders:
+        await state.clear()
+        user_balance = get_user_balance(user_id)
+        return await callback.message.answer(
+            build_pending_purchase_text(pending_purchase_orders, user_balance),
+            parse_mode="HTML",
+            reply_markup=keyboard_pending_purchase_actions(pending_purchase_orders),
+        )
+
     user_balance = get_user_balance(user_id)
     if user_balance < plan["price"]:
-        await state.clear()
+        free_account = find_free_account()
+        if not free_account:
+            await state.clear()
+            return await edit_then_show_main_menu(callback.message, callback.from_user.id, "اکانت آزاد موجود نیست ❌")
 
+        account_id, account_username, _account_password = free_account
         required_balanace = plan["price"] - user_balance
-        active_cards = get_active_cards()
-        cards_text = ""
-        for card in active_cards:
-            cards_text += (
-                f"🏦 {card['bank_name']} "
-                f"به نام {card['owner_name']}\n"
-                f"<code>\u200F{card['card_number']}</code>\n\n"
+        cards_text = build_cards_text()
+
+        try:
+            order_id = insert_order(
+                user_id=user_id,
+                plan_id=plan["id"],
+                username=account_username,
+                price=plan["price"],
+                status="waiting_for_payment",
+                volume_gb=plan.get("volume_gb"),
             )
+            assign_account_to_order(account_id, order_id)
+        except Exception as e:
+            print(f"خطا در ثبت خرید در انتظار پرداخت: {e}")
+            await state.clear()
+            return await edit_then_show_main_menu(callback.message, callback.from_user.id, "❌ خطایی در ثبت سفارش رخ داد.")
 
         text_user = (
-            f"❌ موجودی شما کافی نمی باشد.\n"
-            f" تا زمانی که کیف پول شما شارژ نشود، سفارش ثبت نمی‌شود.\n\n"
-            f"لطفا مبلغ {format_price(required_balanace)} تومان به کارت زیر واریز نموده و تصویر آن را ارسال نمایید.\n\n"
-            f"{cards_text}\n"
-            f"⚠️ پس از تایید مبلغ توسط ادمین، موجودی کیف پول شما افزایش پیدا می‌کند و می‌توانید خرید را دوباره نهایی کنید."
+            f"⏳ سفارش شما ثبت شد و اکانت تا 24 ساعت برایتان رزرو شد.\n\n"
+            f"🔸 پلن: {plan['name']}\n"
+            f"👤 نام کاربری رزروشده: <code>{account_username}</code>\n"
+            f"💰 مبلغ سرویس: {format_price(plan['price'])} تومان\n"
+            f"💳 موجودی فعلی شما: {format_price(user_balance)} تومان\n"
+            f"💵 مبلغ مورد نیاز: {format_price(required_balanace)} تومان\n\n"
+            f"{cards_text}\n\n"
+            f"⚠️ پس از تایید پرداخت، همین سرویس به‌صورت خودکار برای شما فعال می‌شود.\n"
+            f"⚠️ اگر تا 24 ساعت پرداخت نکنید، سفارش لغو و این اکانت دوباره آزاد می‌شود."
         )
-        return await callback.message.answer(text=text_user, parse_mode="HTML", reply_markup=user_main_menu_keyboard())
+        text_admin = (
+            "🔔 درخواست خرید جدید ثبت شد (در انتظار پرداخت)\n"
+            f"📥 کاربر <a href='tg://user?id={user_id}'>{user_id} {first_name} {last_name or ' '}</a>\n"
+            f"📦 پلن: {plan['name']}\n"
+            f"👤 نام کاربری رزروشده: <code>{account_username}</code>\n"
+            f"💳 مبلغ: {format_price(plan['price'])} تومان\n"
+            f"🟡 وضعیت: در انتظار پرداخت"
+        )
+        await send_message_to_admins(text_admin)
+        await state.clear()
+        return await callback.message.answer(
+            text=text_user,
+            parse_mode="HTML",
+            reply_markup=main_menu_keyboard_for_user(callback.from_user.id),
+        )
 
     free_account = find_free_account()
     if not free_account:
         await state.clear()
-        return await edit_then_show_main_menu(callback.message, "اکانت آزاد موجود نیست ❌")
+        return await edit_then_show_main_menu(callback.message, callback.from_user.id, "اکانت آزاد موجود نیست ❌")
 
     account_id, account_username, account_password = free_account
     try:
@@ -593,11 +710,11 @@ async def confirm_and_create(callback: CallbackQuery, state: FSMContext):
             status="active",
             volume_gb=plan.get("volume_gb"),
         )
-        assign_account_to_order(account_id)
+        assign_account_to_order(account_id, order_id)
     except Exception as e:
         print(f"خطا در درج سفارش: {e}")
         await state.clear()
-        return await edit_then_show_main_menu(callback.message, "❌ خطایی در ثبت سفارش رخ داد.")
+        return await edit_then_show_main_menu(callback.message, callback.from_user.id, "❌ خطایی در ثبت سفارش رخ داد.")
 
     change_group(username=account_username, group=plan["group_name"])
 
@@ -610,9 +727,10 @@ async def confirm_and_create(callback: CallbackQuery, state: FSMContext):
         f"📦 {fair_usage_label(plan)}\n"
         f"👤 نام کاربری: `{account_username}`\n"
         f"🔐 رمز: `{account_password}`\n"
-        f"💰 موجودی: {format_price(new_balance)} تومان",
+        f"💰 موجودی: {format_price(new_balance)} تومان\n"
+        f"{VOLUME_POLICY_ALERT}",
         parse_mode="Markdown",
-        reply_markup=user_main_menu_keyboard()
+            reply_markup=main_menu_keyboard_for_user(user_id)
     )
 
     admin_message = (
@@ -632,6 +750,38 @@ async def confirm_and_create(callback: CallbackQuery, state: FSMContext):
     await state.clear()
 
 
+@router.callback_query(F.data.startswith("buy|pending_cancel|"))
+async def cancel_pending_purchase(callback: CallbackQuery, state: FSMContext):
+    _, _, order_id = callback.data.split("|")
+    order = get_order_data(int(order_id))
+
+    if not order or order.get("user_id") != callback.from_user.id:
+        return await callback.answer("این سفارش برای شما نیست.", show_alert=True)
+
+    if order.get("status") != "waiting_for_payment" or order.get("is_renewal_of_order"):
+        return await callback.answer("این سفارش دیگر قابل لغو نیست.", show_alert=True)
+
+    release_account_by_username(str(order["username"]))
+    update_order_status(order_id=order["id"], new_status="canceled")
+    await state.clear()
+
+    remaining_orders = get_user_pending_purchase_orders(callback.from_user.id)
+    if remaining_orders:
+        user_balance = get_user_balance(callback.from_user.id)
+        await callback.message.edit_text(
+            build_pending_purchase_text(remaining_orders, user_balance),
+            parse_mode="HTML",
+            reply_markup=keyboard_pending_purchase_actions(remaining_orders),
+        )
+    else:
+        await callback.message.edit_text(
+            "✅ خرید در انتظار پرداخت لغو شد و اکانت رزروشده دوباره آزاد شد."
+        )
+        await callback.message.answer("بازگشت به منوی اصلی", reply_markup=main_menu_keyboard_for_user(callback.from_user.id))
+
+    await callback.answer("سفارش لغو شد.")
+
+
 # ---------------- Back Navigation ---------------- #
 @router.callback_query(F.data.startswith("buy|back"))
 async def go_back(callback: CallbackQuery, state: FSMContext):
@@ -641,7 +791,7 @@ async def go_back(callback: CallbackQuery, state: FSMContext):
 
     if target == "category":
         # اگر چند دسته داشته‌ایم، دوباره همان لیست را نشان می‌دهیم
-        all_plans = get_buy_plans()
+        all_plans = get_buy_plans(user_id=callback.from_user.id)
         kind, markup, only_category, _ = make_initial_buy_keyboard(all_plans)
 
         if kind == "categories":
@@ -655,7 +805,7 @@ async def go_back(callback: CallbackQuery, state: FSMContext):
             await state.set_state(BuyServiceStates.choosing_duration)
             text = (
                 "مدت زمان سرویس را انتخاب کنید:\n"
-                "ℹ️ این سرویس‌ها دارای «آستانه مصرف منصفانه» هستند؛ با عبور از آستانه، سرویس قطع نمی‌شود."
+                f"{VOLUME_POLICY_TEXT}"
             )
             return await callback.message.edit_text(text, reply_markup=markup)
 
@@ -663,7 +813,11 @@ async def go_back(callback: CallbackQuery, state: FSMContext):
         data = await state.get_data()
         category = normalize_category(data.get("category") or "fixed_ip")
         await state.set_state(BuyServiceStates.choosing_location)
-        available_locations = get_active_locations_by_category(category)
+        available_locations = get_active_locations_by_category(
+            category,
+            user_id=callback.from_user.id,
+            display_context="purchase",
+        )
         if not available_locations:
             return await callback.message.edit_text("❌ فعلاً لوکیشنی برای این دسته موجود نیست.")
         return await callback.message.edit_text(
@@ -681,19 +835,19 @@ async def go_back(callback: CallbackQuery, state: FSMContext):
 
         if category in ("standard", "dual", "custom_location", "modem", "special_access"):
             plans = [
-                p for p in get_buy_plans()
+                p for p in get_buy_plans(user_id=callback.from_user.id)
                 if normalize_category(p.get("category")) == category and _is_active(p)
             ]
             await state.set_state(BuyServiceStates.choosing_duration)
             text = (
                 "مدت زمان سرویس را انتخاب کنید:\n"
-                "ℹ️ این سرویس‌ها دارای «آستانه مصرف منصفانه» هستند؛ با عبور از آستانه، سرویس قطع نمی‌شود."
+                f"{VOLUME_POLICY_TEXT}"
             )
             return await callback.message.edit_text(text, reply_markup=keyboard_durations(plans))
 
         elif category == "fixed_ip" and location:
             plans = [
-                p for p in get_buy_plans()
+                p for p in get_buy_plans(user_id=callback.from_user.id)
                 if p.get("location") == location
                    and normalize_category(p.get("category")) == "fixed_ip"
                    and _is_active(p)
@@ -701,7 +855,7 @@ async def go_back(callback: CallbackQuery, state: FSMContext):
             await state.set_state(BuyServiceStates.choosing_duration)
             text = (
                 "مدت زمان سرویس را انتخاب کنید:\n"
-                "ℹ️ این سرویس‌ها دارای «آستانه مصرف منصفانه» هستند؛ با عبور از آستانه، سرویس قطع نمی‌شود."
+                f"{VOLUME_POLICY_TEXT}"
             )
             return await callback.message.edit_text(
                 text,
@@ -709,7 +863,7 @@ async def go_back(callback: CallbackQuery, state: FSMContext):
             )
 
         # اگر هنوز چیزی پیدا نشد، برگرد به مرحلهٔ اول
-        all_plans = get_buy_plans()
+        all_plans = get_buy_plans(user_id=callback.from_user.id)
         kind, markup, only_category, _ = make_initial_buy_keyboard(all_plans)
         if kind == "categories":
             await state.set_state(BuyServiceStates.choosing_category)
@@ -721,7 +875,7 @@ async def go_back(callback: CallbackQuery, state: FSMContext):
             await state.set_state(BuyServiceStates.choosing_duration)
             text = (
                 "مدت زمان سرویس را انتخاب کنید:\n"
-                "ℹ️ این سرویس‌ها دارای «آستانه مصرف منصفانه» هستند؛ با عبور از آستانه، سرویس قطع نمی‌شود."
+                f"{VOLUME_POLICY_TEXT}"
             )
             return await callback.message.edit_text(text, reply_markup=markup)
 

@@ -4,13 +4,18 @@ from typing import Optional, Union
 import jdatetime
 import requests
 
-from config import BOT_TOKEN  # فرض بر این که توکن در config موجود است
+from config import BOT_TOKEN
 from services import IBSng
 from services.IBSng import change_group
 from services.db import (
-    get_waiting_for_payment_orders, get_user_balance, get_order_data, update_order_status, get_order_plan_duration,
-    get_order_plan_group_name, update_user_balance, get_plan_name
-
+    get_waiting_for_payment_orders,
+    get_user_balance,
+    get_order_data,
+    update_order_status,
+    get_order_plan_group_name,
+    update_user_balance,
+    get_plan_name,
+    get_account_credentials_by_username,
 )
 
 
@@ -21,38 +26,44 @@ def activate_waiting_for_payment_orders() -> None:
 
 def _maybe_waiting_for_payment_order(waiting_for_payment: dict) -> None:
     user_id = waiting_for_payment.get("user_id")
-    plan_price = waiting_for_payment.get("price")
-    current_balance = get_user_balance(user_id=user_id)
+    plan_price = int(waiting_for_payment.get("price") or 0)
+    current_balance = int(get_user_balance(user_id=user_id) or 0)
     if current_balance < plan_price:
-        return  # هنوز موجودیش کافی نیست.
+        return
 
     prev_id: Optional[int] = waiting_for_payment.get("is_renewal_of_order")
-    if not prev_id:
-        return  # No linked order → nothing to do
+    if prev_id:
+        previous = get_order_data(prev_id)
+        if not previous:
+            return
 
-    previous = get_order_data(prev_id)
-    if not previous:
-        return  # Previous order missing
-    # کسر موجودی
+        new_balance = current_balance - plan_price
+        update_user_balance(user_id, new_balance)
+
+        if _is_previous_order_expired(previous):
+            update_order_status(order_id=previous["id"], new_status="renewed")
+            update_order_status(order_id=waiting_for_payment["id"], new_status="active")
+
+            group_info = get_order_plan_group_name(order_id=waiting_for_payment["id"]) or {}
+            group_name = group_info.get("group_name", "Starter-Bot")
+
+            IBSng.reset_account_client(username=waiting_for_payment["username"])
+            change_group(waiting_for_payment["username"], group_name)
+            _notify_user_renewal_activated(order=waiting_for_payment, new_balance=new_balance)
+        else:
+            update_order_status(order_id=previous["id"], new_status="waiting_for_renewal")
+            update_order_status(order_id=waiting_for_payment["id"], new_status="reserved")
+            _notify_user_renewal_reserved(order=waiting_for_payment, new_balance=new_balance)
+        return
+
     new_balance = current_balance - plan_price
     update_user_balance(user_id, new_balance)
+    update_order_status(order_id=waiting_for_payment["id"], new_status="active")
 
-    if _is_previous_order_expired(previous):
-        update_order_status(order_id=previous["id"], new_status="renewed")
-        update_order_status(order_id=waiting_for_payment["id"], new_status="active")
-
-        group_info = get_order_plan_group_name(order_id=waiting_for_payment["id"]) or {}
-        group_name = group_info.get("group_name", "Starter-Bot")
-
-        IBSng.reset_account_client(username=waiting_for_payment["username"])
-        change_group(waiting_for_payment["username"], group_name)
-        _notify_user_payment_activated(reserved_order=waiting_for_payment, new_balance=new_balance)
-
-    else:
-        update_order_status(order_id=previous["id"], new_status="waiting_for_renewal")
-        update_order_status(order_id=waiting_for_payment["id"], new_status="reserved")
-
-        _notify_user_payment_reserved(reserved_order=waiting_for_payment, new_balance=new_balance)
+    group_info = get_order_plan_group_name(order_id=waiting_for_payment["id"]) or {}
+    group_name = group_info.get("group_name", "Starter-Bot")
+    change_group(waiting_for_payment["username"], group_name)
+    _notify_user_purchase_activated(order=waiting_for_payment, new_balance=new_balance)
 
 
 def _is_previous_order_expired(order: dict) -> bool:
@@ -72,50 +83,61 @@ def format_price(amount: Union[int, float]) -> str:
         return str(amount)
 
 
-def _notify_user_payment_activated(reserved_order: dict, new_balance: int) -> None:
-    plan_id = reserved_order.get("plan_id")
-    plan_name = get_plan_name(plan_id=plan_id)
-    username = reserved_order["username"]
+def _send_notification(user_id: int, msg: str) -> None:
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    data = {
+        "chat_id": user_id,
+        "text": msg,
+        "parse_mode": "HTML",
+    }
+    response = requests.post(url, data=data, timeout=15)
+    if not response.ok:
+        raise Exception(f"Telegram API error: {response.text}")
 
+
+def _notify_user_purchase_activated(order: dict, new_balance: int) -> None:
+    plan_name = get_plan_name(plan_id=order.get("plan_id"))
+    username = order["username"]
+    account = get_account_credentials_by_username(username)
+    password = account.get("password") if account else None
+
+    lines = [
+        "✅ پرداخت شما تأیید شد و سرویس جدیدتان فعال گردید.",
+        "",
+        f"🔸 پلن: {plan_name}",
+        f"👤 نام کاربری: <code>{username}</code>",
+    ]
+    if password:
+        lines.append(f"🔐 رمز عبور: <code>{password}</code>")
+    lines.extend([
+        f"💰 موجودی: {format_price(new_balance)} تومان",
+        "⚠️ پس از اتمام حجم این سرویس، اتصال آن قطع می‌شود.",
+    ])
+    _send_notification(order["user_id"], "\n".join(lines))
+
+
+def _notify_user_renewal_activated(order: dict, new_balance: int) -> None:
+    plan_name = get_plan_name(plan_id=order.get("plan_id"))
+    username = order["username"]
     msg = (
         f"✅ پرداخت شما با موفقیت ثبت شد و سرویس شما فعال گردید.\n\n"
         f"🔸 پلن: {plan_name}\n"
-        f"👤 نام کاربری: `{username}`\n"
-        f"💰 موجودی: {format_price(new_balance)} تومان"
+        f"👤 نام کاربری: <code>{username}</code>\n"
+        f"💰 موجودی: {format_price(new_balance)} تومان\n"
+        f"⚠️ پس از اتمام حجم این سرویس، اتصال آن قطع می‌شود."
     )
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    data = {
-        "chat_id": reserved_order["user_id"],
-        "text": msg,
-        "parse_mode": "HTML"
-    }
-
-    response = requests.post(url, data=data)
-    if not response.ok:
-        raise Exception(f"Telegram API error: {response.text}")
+    _send_notification(order["user_id"], msg)
 
 
-def _notify_user_payment_reserved(reserved_order: dict, new_balance: int) -> None:
-    plan_id = reserved_order.get("plan_id")
-    plan_name = get_plan_name(plan_id=plan_id)
-    username = reserved_order["username"]
-
+def _notify_user_renewal_reserved(order: dict, new_balance: int) -> None:
+    plan_name = get_plan_name(plan_id=order.get("plan_id"))
+    username = order["username"]
     msg = (
-
         f"✅ پرداخت شما با موفقیت ثبت شد.\n"
-        f" سرویس شما پس از پایان دوره‌ی فعلی به‌صورت خودکار فعال می گردد.\n\n"
+        f"سرویس شما پس از پایان دوره‌ی فعلی به‌صورت خودکار فعال می‌گردد.\n\n"
         f"🔸 پلن: {plan_name}\n"
-        f"👤 نام کاربری: `{username}`\n"
-        f"💰 موجودی: {format_price(new_balance)} تومان"
+        f"👤 نام کاربری: <code>{username}</code>\n"
+        f"💰 موجودی: {format_price(new_balance)} تومان\n"
+        f"⚠️ پس از اتمام حجم این سرویس، اتصال آن قطع می‌شود."
     )
-
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    data = {
-        "chat_id": reserved_order["user_id"],
-        "text": msg,
-        "parse_mode": "HTML"
-    }
-
-    response = requests.post(url, data=data)
-    if not response.ok:
-        raise Exception(f"Telegram API error: {response.text}")
+    _send_notification(order["user_id"], msg)

@@ -32,8 +32,8 @@ def add_plan_to_db(name, volume_gb, duration_months, duration_days, max_users, p
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute(
-        """INSERT INTO plans (name, volume_gb, duration_months, duration_days, max_users, price, order_priority, visible, location, is_unlimited, group_name)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        """INSERT INTO plans (name, volume_gb, duration_months, duration_days, max_users, price, order_priority, visible, location, is_unlimited, group_name, access_level, display_context)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'all', 'all')""",
         (name, volume_gb, duration_months, duration_days, max_users, price, order_priority, visible, location, is_unlimited, group_name)
     )
     conn.commit()
@@ -53,6 +53,7 @@ def update_plan_field(plan_id: int, field: str, value):
 def delete_plan_from_db(plan_id: int):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
+    cur.execute("DELETE FROM plan_segments WHERE plan_id = ?", (plan_id,))
     cur.execute("DELETE FROM plans WHERE id = ?", (plan_id,))
     conn.commit()
     conn.close()

@@ -55,23 +55,6 @@ def create_tables():
                 """)
 
         cursor.execute("""
-                CREATE TABLE IF NOT EXISTS order_usages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    order_id INTEGER,
-                    username TEXT,
-                    plan_id INTEGER,
-                    starts_at TEXT,
-                    expires_at TEXT,
-                    last_update NUMERIC,
-                    sent_mb INTEGER,
-                    received_mb INTEGER,
-                    total_mb INTEGER,
-                    applied_speed TEXT,
-                    FOREIGN KEY(order_id) REFERENCES orders(id)
-                )
-                """)
-
-        cursor.execute("""
                 CREATE TABLE IF NOT EXISTS orders (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER,
@@ -104,21 +87,6 @@ def create_tables():
                     is_unlimited INTEGER DEFAULT 0,
                     group_name TEXT,
                     duration_days INTEGER
-                )
-                """)
-
-        cursor.execute("""
-                CREATE TABLE IF NOT EXISTS servers (
-                    server_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    location TEXT NOT NULL,
-                    ip TEXT NOT NULL,
-                    port INTEGER NOT NULL,
-                    panel_path TEXT NOT NULL,
-                    api_base_url TEXT NOT NULL,
-                    v2ray_username TEXT NOT NULL,
-                    v2ray_password TEXT NOT NULL,
-                    inbound_id INTEGER,
-                    subscription_path TEXT
                 )
                 """)
 
@@ -156,30 +124,49 @@ def create_tables():
                 """)
 
         cursor.execute("""
-                CREATE TABLE IF NOT EXISTS order_payments (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER,
-                    order_id INTEGER,
-                    amount INTEGER NOT NULL,
-                    status TEXT NOT NULL,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
-                )
-                """)
-
-        cursor.execute("""
                 CREATE TABLE IF NOT EXISTS ownership_transfers (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     from_user_id INTEGER NOT NULL,
                     to_user_id INTEGER NOT NULL,
+                    username TEXT,
                     transferred_by INTEGER,
                     transferred_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     total_orders INTEGER DEFAULT 0
                 )
                 """)
 
+        cursor.execute("""
+                CREATE TABLE IF NOT EXISTS segments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    slug TEXT NOT NULL UNIQUE,
+                    title TEXT NOT NULL,
+                    description TEXT,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                """)
+
+        cursor.execute("""
+                CREATE TABLE IF NOT EXISTS segment_users (
+                    segment_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (segment_id, user_id)
+                )
+                """)
+
+        cursor.execute("""
+                CREATE TABLE IF NOT EXISTS plan_segments (
+                    plan_id INTEGER NOT NULL,
+                    segment_id INTEGER NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (plan_id, segment_id)
+                )
+                """)
+
         ensure_column("plans", "duration_days", "INTEGER")
         ensure_column("plans", "category", "TEXT DEFAULT 'standard'")
-        ensure_column("plans", "access_level", "TEXT")
+        ensure_column("plans", "access_level", "TEXT DEFAULT 'all'")
         ensure_column("plans", "display_context", "TEXT DEFAULT 'all'")
 
         ensure_column("users", "last_name", "TEXT")
@@ -195,9 +182,47 @@ def create_tables():
         ensure_column("orders", "usage_total_mb", "INTEGER DEFAULT 0")
         ensure_column("orders", "usage_last_update", "TEXT")
         ensure_column("orders", "usage_applied_speed", "TEXT")
+        ensure_column("orders", "usage_notif_level", "INTEGER DEFAULT 0")
 
-        ensure_column("order_usages", "limit_mb", "INTEGER DEFAULT 0")
-        ensure_column("order_usages", "status", "TEXT DEFAULT 'active'")
+        ensure_column("transactions", "amount_claimed", "INTEGER DEFAULT 0")
+        ensure_column("transactions", "destination_card_id", "INTEGER")
+        ensure_column("transactions", "destination_card_number", "TEXT")
+        ensure_column("transactions", "destination_card_owner", "TEXT")
+        ensure_column("transactions", "destination_bank_name", "TEXT")
+        ensure_column("transactions", "transfer_date", "TEXT")
+        ensure_column("transactions", "transfer_time", "TEXT")
+        ensure_column("transactions", "source_card_last4", "TEXT")
+        ensure_column("transactions", "submitted_at", "TEXT")
+        ensure_column("transactions", "duplicate_flags", "TEXT")
+        ensure_column("transactions", "duplicate_candidate_ids", "TEXT")
+        ensure_column("transactions", "is_duplicate_suspect", "INTEGER DEFAULT 0")
+        ensure_column("transactions", "admin_reviewed_at", "TEXT")
+        ensure_column("transactions", "admin_reviewed_by", "INTEGER")
+        ensure_column("transactions", "admin_note", "TEXT")
+        ensure_column("transactions", "accounting_reviewed_at", "TEXT")
+        ensure_column("transactions", "accounting_reviewed_by", "INTEGER")
+        ensure_column("transactions", "accounting_note", "TEXT")
+        ensure_column("transactions", "balance_reverted", "INTEGER DEFAULT 0")
+        ensure_column("transactions", "balance_reverted_at", "TEXT")
+        ensure_column("transactions", "balance_reverted_by", "INTEGER")
+        ensure_column("transactions", "balance_reverted_reason", "TEXT")
+
+        ensure_column("ownership_transfers", "username", "TEXT")
+        cursor.execute("""
+            UPDATE plans
+            SET access_level = 'all'
+            WHERE access_level IS NULL OR TRIM(access_level) = ''
+        """)
+        cursor.execute("""
+            UPDATE plans
+            SET display_context = 'all'
+            WHERE display_context IS NULL OR TRIM(display_context) = ''
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_segment_users_user_id ON segment_users(user_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_plan_segments_plan_id ON plan_segments(plan_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_plan_segments_segment_id ON plan_segments(segment_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_transactions_status_created_at ON transactions(status, created_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_transactions_photo_hash ON transactions(photo_hash)")
         initialize_runtime_settings_schema(cursor)
         conn.commit()
 
@@ -226,12 +251,122 @@ def get_user_info(user_id):
 
 # Plan management
 
+VALID_PLAN_DISPLAY_CONTEXTS = {"all", "purchase", "renew", "agent"}
+VALID_PLAN_ACCESS_LEVELS = {"all", "user", "agent", "admin"}
+
+
+def _normalize_plan_display_context(value: Optional[str]) -> str:
+    normalized = (value or "all").strip().lower()
+    return normalized if normalized in VALID_PLAN_DISPLAY_CONTEXTS else "all"
+
+
+def _normalize_plan_access_level(value: Optional[str]) -> str:
+    normalized = (value or "all").strip().lower()
+    return normalized if normalized in VALID_PLAN_ACCESS_LEVELS else "all"
+
+
+def _normalize_segment_slug(value: str) -> str:
+    slug = (value or "").strip().lower().replace(" ", "_").replace("-", "_")
+    while "__" in slug:
+        slug = slug.replace("__", "_")
+    return slug.strip("_")
+
+
+def _get_user_role_for_plans(conn: sqlite3.Connection, user_id: Optional[int]) -> Optional[str]:
+    if user_id is None:
+        return None
+
+    cur = conn.cursor()
+    cur.execute("SELECT role FROM users WHERE id = ?", (user_id,))
+    row = cur.fetchone()
+    role = row[0] if row else None
+    role = (role or "user").strip().lower()
+    return role if role in VALID_PLAN_ACCESS_LEVELS else "user"
+
+
+def _apply_plan_audience_filters(base_query: str, params: List, user_id: Optional[int], role: Optional[str],
+                                 display_context: Optional[str]):
+    clauses = [base_query]
+
+    if display_context:
+        clauses.append("""
+            AND (
+                COALESCE(NULLIF(display_context, ''), 'all') = 'all'
+                OR COALESCE(NULLIF(display_context, ''), 'all') = ?
+            )
+        """)
+        params.append(_normalize_plan_display_context(display_context))
+
+    if role and role != "admin":
+        clauses.append("""
+            AND COALESCE(NULLIF(access_level, ''), 'all') IN ('all', ?)
+        """)
+        params.append(_normalize_plan_access_level(role))
+
+        clauses.append("""
+            AND (
+                NOT EXISTS (
+                    SELECT 1
+                    FROM plan_segments ps
+                    JOIN segments s ON s.id = ps.segment_id
+                    WHERE ps.plan_id = plans.id
+                      AND COALESCE(s.is_active, 1) = 1
+                )
+                OR EXISTS (
+                    SELECT 1
+                    FROM plan_segments ps
+                    JOIN segments s ON s.id = ps.segment_id
+                    JOIN segment_users su ON su.segment_id = ps.segment_id
+                    WHERE ps.plan_id = plans.id
+                      AND COALESCE(s.is_active, 1) = 1
+                      AND su.user_id = ?
+                )
+            )
+        """)
+        params.append(user_id)
+
+    return "\n".join(clauses), params
+
+
+def _get_context_plans(display_context: Optional[str] = None, user_id: Optional[int] = None):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        role = _get_user_role_for_plans(conn, user_id)
+        query, params = _apply_plan_audience_filters(
+            """
+            SELECT
+                id,
+                name,
+                volume_gb,
+                duration_months,
+                duration_days,
+                max_users,
+                price,
+                group_name,
+                category,
+                location,
+                is_unlimited,
+                COALESCE(NULLIF(access_level, ''), 'all') AS access_level,
+                COALESCE(NULLIF(display_context, ''), 'all') AS display_context
+            FROM plans
+            WHERE visible = 1
+            """,
+            [],
+            user_id=user_id,
+            role=role,
+            display_context=display_context,
+        )
+        query = f"{query}\nORDER BY order_priority DESC, id ASC"
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        return [dict(row) for row in cursor.fetchall()]
+
 def add_plan(name, volume_gb, duration_days, max_users, price):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute("""
-                       INSERT INTO plans (name, volume_gb, duration_days, max_users, price)
-                       VALUES (?, ?, ?, ?, ?)
+                       INSERT INTO plans (name, volume_gb, duration_days, max_users, price, access_level, display_context)
+                       VALUES (?, ?, ?, ?, ?, 'all', 'all')
                        """, (name, volume_gb, duration_days, max_users, price))
         conn.commit()
 
@@ -251,111 +386,462 @@ def get_all_plans():
                 price,
                 group_name,
                 category,
-                location
+                location,
+                COALESCE(NULLIF(access_level, ''), 'all') AS access_level,
+                COALESCE(NULLIF(display_context, ''), 'all') AS display_context
             FROM plans
-            where visible is 1
-            ORDER BY order_priority DESC
+            WHERE visible = 1
+            ORDER BY order_priority DESC, id ASC
         """)
         return [dict(row) for row in cursor.fetchall()]
 
 
-def get_buy_plans():
+def get_buy_plans(user_id: Optional[int] = None):
+    return _get_context_plans(display_context="purchase", user_id=user_id)
+
+
+def get_renew_plans(user_id: Optional[int] = None):
+    """Ù¾Ù„Ù†â€ŒÙ‡Ø§ÛŒÛŒ Ú©Ù‡ Ø¨Ø±Ø§ÛŒ ØªÙ…Ø¯ÛŒØ¯ Ù†Ù…Ø§ÛŒØ´ Ø¯Ø§Ø¯Ù‡ Ù…ÛŒâ€ŒØ´ÙˆÙ†Ø¯"""
+    return _get_context_plans(display_context="renew", user_id=user_id)
+
+
+def get_agent_plans(user_id: Optional[int] = None):
+    """Ù¾Ù„Ù†â€ŒÙ‡Ø§ÛŒÛŒ Ú©Ù‡ Ø¨Ø±Ø§ÛŒ Ù†Ù…Ø§ÛŒÙ†Ø¯Ù‡â€ŒÙ‡Ø§ Ù†Ù…Ø§ÛŒØ´ Ø¯Ø§Ø¯Ù‡ Ù…ÛŒâ€ŒØ´ÙˆÙ†Ø¯"""
+    return _get_context_plans(display_context="agent", user_id=user_id)
+
+
+def get_all_segments():
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT 
-                id,
-                name,
-                volume_gb,
-                duration_months,
-                duration_days,
-                max_users,
-                price,
-                group_name,
-                category,
-                location
-            FROM plans
-            WHERE visible = 1
-              AND (display_context = 'purchase' OR display_context = 'all')
-            ORDER BY order_priority DESC
+            SELECT
+                s.id,
+                s.slug,
+                s.title,
+                s.description,
+                s.is_active,
+                s.created_at,
+                COALESCE(u.user_count, 0) AS user_count,
+                COALESCE(p.plan_count, 0) AS plan_count
+            FROM segments s
+            LEFT JOIN (
+                SELECT segment_id, COUNT(*) AS user_count
+                FROM segment_users
+                GROUP BY segment_id
+            ) u ON u.segment_id = s.id
+            LEFT JOIN (
+                SELECT segment_id, COUNT(*) AS plan_count
+                FROM plan_segments
+                GROUP BY segment_id
+            ) p ON p.segment_id = s.id
+            ORDER BY COALESCE(s.is_active, 1) DESC, s.title COLLATE NOCASE ASC, s.id ASC
         """)
         return [dict(row) for row in cursor.fetchall()]
 
 
-def get_renew_plans():
-    """پلن‌هایی که برای تمدید نمایش داده می‌شوند"""
+def get_segment(segment_id: int):
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT 
-                id,
-                name,
-                volume_gb,
-                duration_months,
-                duration_days,
-                max_users,
-                price,
-                group_name,
-                category,
-                location
-            FROM plans
-            WHERE visible = 1
-              AND (display_context = 'renew' OR display_context = 'all')
-            ORDER BY order_priority DESC
-        """)
-        return [dict(row) for row in cursor.fetchall()]
+            SELECT
+                s.id,
+                s.slug,
+                s.title,
+                s.description,
+                s.is_active,
+                s.created_at,
+                COALESCE(u.user_count, 0) AS user_count,
+                COALESCE(p.plan_count, 0) AS plan_count
+            FROM segments s
+            LEFT JOIN (
+                SELECT segment_id, COUNT(*) AS user_count
+                FROM segment_users
+                GROUP BY segment_id
+            ) u ON u.segment_id = s.id
+            LEFT JOIN (
+                SELECT segment_id, COUNT(*) AS plan_count
+                FROM plan_segments
+                GROUP BY segment_id
+            ) p ON p.segment_id = s.id
+            WHERE s.id = ?
+            LIMIT 1
+        """, (segment_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
 
 
-def get_agent_plans():
-    """پلن‌هایی که برای نماینده‌ها نمایش داده می‌شوند"""
+def get_segment_by_slug(slug: str):
+    normalized = _normalize_segment_slug(slug)
+    if not normalized:
+        return None
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT 
-                id,
-                name,
-                volume_gb,
-                duration_months,
-                duration_days,
-                max_users,
-                price,
-                group_name,
-                category,
-                location
-            FROM plans
-            WHERE visible = 1
-              AND (display_context = 'agent' OR display_context = 'all')
-            ORDER BY order_priority DESC
-        """)
-        return [dict(row) for row in cursor.fetchall()]
+        cursor.execute("SELECT * FROM segments WHERE slug = ? LIMIT 1", (normalized,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
 
 
-# Server management
+def create_segment(slug: str, title: str, description: Optional[str] = None):
+    normalized = _normalize_segment_slug(slug)
+    clean_title = (title or "").strip()
+    if not normalized or not clean_title:
+        raise ValueError("segment slug and title are required")
 
-def add_server(location, ip, port, panel_path, api_base_url, v2ray_username, v2ray_password, inbound_id=None,
-               subscription_path=None):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute("""
-                       INSERT INTO servers (location, ip, port, panel_path, api_base_url, v2ray_username,
-                                            v2ray_password, inbound_id, subscription_path)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                       """, (
-            location, ip, port, panel_path, api_base_url, v2ray_username, v2ray_password, inbound_id,
-            subscription_path))
+            INSERT INTO segments (slug, title, description)
+            VALUES (?, ?, ?)
+        """, (normalized, clean_title, (description or "").strip() or None))
+        conn.commit()
+        return cursor.lastrowid
+
+
+def update_segment_info(segment_id: int, title: str, description: Optional[str] = None):
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE segments
+            SET title = ?,
+                description = ?
+            WHERE id = ?
+        """, ((title or "").strip(), (description or "").strip() or None, segment_id))
         conn.commit()
 
 
-def get_all_servers():
+def set_segment_active(segment_id: int, is_active: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE segments
+            SET is_active = ?
+            WHERE id = ?
+        """, (1 if is_active else 0, segment_id))
+        conn.commit()
+
+
+def delete_segment(segment_id: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM segment_users WHERE segment_id = ?", (segment_id,))
+        cursor.execute("DELETE FROM plan_segments WHERE segment_id = ?", (segment_id,))
+        cursor.execute("DELETE FROM segments WHERE id = ?", (segment_id,))
+        conn.commit()
+
+
+def get_segment_users(segment_id: int, limit: int = 30):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                u.id,
+                u.first_name,
+                u.last_name,
+                u.username,
+                u.role,
+                su.created_at
+            FROM segment_users su
+            JOIN users u ON u.id = su.user_id
+            WHERE su.segment_id = ?
+            ORDER BY su.created_at DESC, u.id ASC
+            LIMIT ?
+        """, (segment_id, limit))
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def get_segment_plans(segment_id: int, limit: int = 30):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                p.id,
+                p.name,
+                p.price,
+                COALESCE(NULLIF(p.access_level, ''), 'all') AS access_level,
+                COALESCE(NULLIF(p.display_context, ''), 'all') AS display_context,
+                ps.created_at
+            FROM plan_segments ps
+            JOIN plans p ON p.id = ps.plan_id
+            WHERE ps.segment_id = ?
+            ORDER BY p.order_priority DESC, p.id ASC
+            LIMIT ?
+        """, (segment_id, limit))
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def get_plan_segments(plan_id: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                s.id,
+                s.slug,
+                s.title,
+                s.description,
+                s.is_active
+            FROM plan_segments ps
+            JOIN segments s ON s.id = ps.segment_id
+            WHERE ps.plan_id = ?
+            ORDER BY s.title COLLATE NOCASE ASC, s.id ASC
+        """, (plan_id,))
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def add_users_to_segment(segment_id: int, user_ids: List[int]) -> int:
+    cleaned_ids = sorted({int(user_id) for user_id in user_ids})
+    if not cleaned_ids:
+        return 0
+
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        total_added = 0
+        for user_id in cleaned_ids:
+            cursor.execute("""
+                INSERT OR IGNORE INTO segment_users (segment_id, user_id)
+                VALUES (?, ?)
+            """, (segment_id, user_id))
+            total_added += cursor.rowcount
+        conn.commit()
+        return total_added
+
+
+def remove_users_from_segment(segment_id: int, user_ids: List[int]) -> int:
+    cleaned_ids = sorted({int(user_id) for user_id in user_ids})
+    if not cleaned_ids:
+        return 0
+
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.executemany("""
+            DELETE FROM segment_users
+            WHERE segment_id = ? AND user_id = ?
+        """, [(segment_id, user_id) for user_id in cleaned_ids])
+        conn.commit()
+        return cursor.rowcount
+
+
+def attach_segments_to_plan(plan_id: int, segment_ids: List[int]) -> int:
+    cleaned_ids = sorted({int(segment_id) for segment_id in segment_ids})
+    if not cleaned_ids:
+        return 0
+
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        total_added = 0
+        for segment_id in cleaned_ids:
+            cursor.execute("""
+                INSERT OR IGNORE INTO plan_segments (plan_id, segment_id)
+                VALUES (?, ?)
+            """, (plan_id, segment_id))
+            total_added += cursor.rowcount
+        conn.commit()
+        return total_added
+
+
+def detach_segments_from_plan(plan_id: int, segment_ids: List[int]) -> int:
+    cleaned_ids = sorted({int(segment_id) for segment_id in segment_ids})
+    if not cleaned_ids:
+        return 0
+
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.executemany("""
+            DELETE FROM plan_segments
+            WHERE plan_id = ? AND segment_id = ?
+        """, [(plan_id, segment_id) for segment_id in cleaned_ids])
+        conn.commit()
+        return cursor.rowcount
+
+
+def update_plan_access_level(plan_id: int, access_level: str):
+    normalized = _normalize_plan_access_level(access_level)
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE plans
+            SET access_level = ?
+            WHERE id = ?
+        """, (normalized, plan_id))
+        conn.commit()
+
+
+def update_plan_display_context(plan_id: int, display_context: str):
+    normalized = _normalize_plan_display_context(display_context)
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE plans
+            SET display_context = ?
+            WHERE id = ?
+        """, (normalized, plan_id))
+        conn.commit()
+
+
+def resolve_user_identifiers(identifiers: List[str]):
+    resolved: List[Dict] = []
+    missing: List[str] = []
+    seen_user_ids = set()
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        for raw_identifier in identifiers:
+            token = (raw_identifier or "").strip()
+            if not token:
+                continue
+
+            row = None
+            if token.lstrip("-").isdigit():
+                cursor.execute("""
+                    SELECT id, first_name, last_name, username, role
+                    FROM users
+                    WHERE id = ?
+                    LIMIT 1
+                """, (int(token),))
+                row = cursor.fetchone()
+            else:
+                username = token.lstrip("@")
+                cursor.execute("""
+                    SELECT id, first_name, last_name, username, role
+                    FROM users
+                    WHERE LOWER(username) = LOWER(?)
+                    LIMIT 1
+                """, (username,))
+                row = cursor.fetchone()
+
+            if row is None:
+                missing.append(token)
+                continue
+
+            row_dict = dict(row)
+            if row_dict["id"] in seen_user_ids:
+                continue
+
+            seen_user_ids.add(row_dict["id"])
+            resolved.append(row_dict)
+
+    return resolved, missing
+
+
+def get_all_user_ids_for_messaging() -> List[int]:
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT server_id, location, ip, port, panel_path, api_base_url, v2ray_username, v2ray_password, inbound_id, subscription_path FROM servers"
+            """
+            SELECT id
+            FROM users
+            ORDER BY id ASC
+            """
         )
-        return cursor.fetchall()
+        return [int(row[0]) for row in cursor.fetchall()]
+
+
+def get_user_ids_by_min_balance(min_balance: int) -> List[int]:
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id
+            FROM users
+            WHERE COALESCE(balance, 0) >= ?
+            ORDER BY COALESCE(balance, 0) DESC, id ASC
+            """,
+            (int(min_balance),),
+        )
+        return [int(row[0]) for row in cursor.fetchall()]
+
+
+def get_user_ids_by_segment_ids(segment_ids: List[int], only_active_segments: bool = True) -> List[int]:
+    cleaned_ids = sorted({int(segment_id) for segment_id in segment_ids})
+    if not cleaned_ids:
+        return []
+
+    placeholders = ", ".join("?" for _ in cleaned_ids)
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        if only_active_segments:
+            cursor.execute(
+                f"""
+                SELECT DISTINCT su.user_id
+                FROM segment_users su
+                JOIN segments s ON s.id = su.segment_id
+                WHERE su.segment_id IN ({placeholders})
+                  AND COALESCE(s.is_active, 1) = 1
+                ORDER BY su.user_id ASC
+                """,
+                cleaned_ids,
+            )
+        else:
+            cursor.execute(
+                f"""
+                SELECT DISTINCT su.user_id
+                FROM segment_users su
+                WHERE su.segment_id IN ({placeholders})
+                ORDER BY su.user_id ASC
+                """,
+                cleaned_ids,
+            )
+        return [int(row[0]) for row in cursor.fetchall()]
+
+
+def get_all_plans_for_admin_audience():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                p.id,
+                p.name,
+                p.price,
+                p.visible,
+                p.category,
+                p.location,
+                COALESCE(NULLIF(p.access_level, ''), 'all') AS access_level,
+                COALESCE(NULLIF(p.display_context, ''), 'all') AS display_context,
+                COALESCE(ps.segment_count, 0) AS segment_count
+            FROM plans p
+            LEFT JOIN (
+                SELECT plan_id, COUNT(*) AS segment_count
+                FROM plan_segments
+                GROUP BY plan_id
+            ) ps ON ps.plan_id = p.id
+            ORDER BY p.order_priority DESC, p.id ASC
+        """)
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def get_plan_for_admin_audience(plan_id: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                id,
+                name,
+                volume_gb,
+                duration_months,
+                duration_days,
+                max_users,
+                price,
+                visible,
+                category,
+                location,
+                group_name,
+                COALESCE(NULLIF(access_level, ''), 'all') AS access_level,
+                COALESCE(NULLIF(display_context, ''), 'all') AS display_context
+            FROM plans
+            WHERE id = ?
+            LIMIT 1
+        """, (plan_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
 
 
 def get_next_account_number():
@@ -375,7 +861,7 @@ def insert_order(user_id, plan_id, username, price, status, volume_gb):
                        INSERT INTO orders (user_id, plan_id, username, price, created_at, status, volume_gb)
                        VALUES (?, ?, ?, ?, ?, ?, ?)
                        ''', (user_id, plan_id, username, price, created_at, status, volume_gb))
-        order_id = cursor.lastrowid  # گرفتن آیدی آخرین ردیف واردشده
+        order_id = cursor.lastrowid  # Ú¯Ø±ÙØªÙ† Ø¢ÛŒØ¯ÛŒ Ø¢Ø®Ø±ÛŒÙ† Ø±Ø¯ÛŒÙ ÙˆØ§Ø±Ø¯Ø´Ø¯Ù‡
         conn.commit()
         return order_id
 
@@ -388,7 +874,7 @@ def insert_renewed_order(user_id, plan_id, username, price, status, is_renewal_o
                        INSERT INTO orders (user_id, plan_id, username, price, created_at, status, is_renewal_of_order, volume_gb)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                        ''', (user_id, plan_id, username, price, created_at, status, is_renewal_of_order, volume_gb))
-        order_id = cursor.lastrowid  # گرفتن آیدی آخرین ردیف واردشده
+        order_id = cursor.lastrowid  # Ú¯Ø±ÙØªÙ† Ø¢ÛŒØ¯ÛŒ Ø¢Ø®Ø±ÛŒÙ† Ø±Ø¯ÛŒÙ ÙˆØ§Ø±Ø¯Ø´Ø¯Ù‡
         conn.commit()
         return order_id
 
@@ -403,7 +889,7 @@ def insert_renewed_order_with_auto_renew(user_id, plan_id, username, price, stat
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?,?)
                        ''', (
             user_id, plan_id, username, price, created_at, status, is_renewal_of_order, volume_gb, auto_renew))
-        order_id = cursor.lastrowid  # گرفتن آیدی آخرین ردیف واردشده
+        order_id = cursor.lastrowid  # Ú¯Ø±ÙØªÙ† Ø¢ÛŒØ¯ÛŒ Ø¢Ø®Ø±ÛŒÙ† Ø±Ø¯ÛŒÙ ÙˆØ§Ø±Ø¯Ø´Ø¯Ù‡
         conn.commit()
         return order_id
 
@@ -412,28 +898,6 @@ def update_user_balance(user_id, new_balance):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute("UPDATE users SET balance = ? WHERE id = ?", (new_balance, user_id))
-        conn.commit()
-
-
-def insert_payment(user_id, order_id, amount, status):
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-                       INSERT INTO order_payments (user_id, order_id, amount, status, created_at)
-                       VALUES (?, ?, ?, ?, ?)
-                       """, (user_id, order_id, amount, status, datetime.now().isoformat()))
-        conn.commit()
-
-
-def update_latest_payment_order_id(user_id, order_id):
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-                       UPDATE order_payments
-                       SET order_id = ?
-                       WHERE user_id = ?
-                         AND order_id IS NULL
-                       """, (order_id, user_id))
         conn.commit()
 
 
@@ -497,7 +961,7 @@ def get_user_balance(user_id: int) -> Optional[int]:
         return result[0] if result else 0
 
 
-# پیدا کردن اولین اکانت آزاد
+# Ù¾ÛŒØ¯Ø§ Ú©Ø±Ø¯Ù† Ø§ÙˆÙ„ÛŒÙ† Ø§Ú©Ø§Ù†Øª Ø¢Ø²Ø§Ø¯
 def find_free_account():
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
@@ -506,30 +970,58 @@ def find_free_account():
             WHERE status = 'free'
             LIMIT 1
         """)
-        return cursor.fetchone()  # اگر None برگرده یعنی اکانت آزاد نیست
+        return cursor.fetchone()  # Ø§Ú¯Ø± None Ø¨Ø±Ú¯Ø±Ø¯Ù‡ ÛŒØ¹Ù†ÛŒ Ø§Ú©Ø§Ù†Øª Ø¢Ø²Ø§Ø¯ Ù†ÛŒØ³Øª
 
 
-# رزرو اکانت برای یک سفارش خاص
-def assign_account_to_order(account_id: int):
+# Ø±Ø²Ø±Ùˆ Ø§Ú©Ø§Ù†Øª Ø¨Ø±Ø§ÛŒ ÛŒÚ© Ø³ÙØ§Ø±Ø´ Ø®Ø§Øµ
+def assign_account_to_order(account_id: int, order_id: Optional[int] = None):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE accounts
-            SET status = 'assigned'
-            WHERE id = ?
-        """, (account_id,))
+        if order_id is None:
+            cursor.execute("""
+                UPDATE accounts
+                SET status = 'assigned'
+                WHERE id = ?
+            """, (account_id,))
+        else:
+            cursor.execute("""
+                UPDATE accounts
+                SET status = 'assigned',
+                    order_id = ?
+                WHERE id = ?
+            """, (order_id, account_id))
         conn.commit()
 
 
-# تغییر وضعیت اکانت (مثلاً آزاد کردن بعد از انقضا)
+# ØªØºÛŒÛŒØ± ÙˆØ¶Ø¹ÛŒØª Ø§Ú©Ø§Ù†Øª (Ù…Ø«Ù„Ø§Ù‹ Ø¢Ø²Ø§Ø¯ Ú©Ø±Ø¯Ù† Ø¨Ø¹Ø¯ Ø§Ø² Ø§Ù†Ù‚Ø¶Ø§)
 def update_account_status(account_id: int, new_status: str):
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        if new_status == "free":
+            cursor.execute("""
+                UPDATE accounts
+                SET status = ?,
+                    order_id = NULL
+                WHERE id = ?
+            """, (new_status, account_id))
+        else:
+            cursor.execute("""
+                UPDATE accounts
+                SET status = ?
+                WHERE id = ?
+            """, (new_status, account_id))
+        conn.commit()
+
+
+def release_account_by_username(username: str):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute("""
             UPDATE accounts
-            SET status = ?
-            WHERE id = ?
-        """, (new_status, account_id))
+            SET status = 'free',
+                order_id = NULL
+            WHERE username = ?
+        """, (username,))
         conn.commit()
 
 
@@ -567,9 +1059,50 @@ def get_user_services(user_id: int):
         return cursor.fetchall()
 
 
+def get_user_services_for_password_change(user_id: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                a.id AS account_id,
+                a.username,
+                a.password,
+                (
+                    SELECT p.name
+                    FROM orders o2
+                    LEFT JOIN plans p ON p.id = o2.plan_id
+                    WHERE o2.user_id = ?
+                      AND o2.username = a.username
+                      AND o2.status NOT IN ('archived', 'renewed', 'canceled', 'waiting_for_payment')
+                    ORDER BY o2.created_at DESC, o2.id DESC
+                    LIMIT 1
+                ) AS plan_name,
+                (
+                    SELECT o3.status
+                    FROM orders o3
+                    WHERE o3.user_id = ?
+                      AND o3.username = a.username
+                      AND o3.status NOT IN ('archived', 'renewed', 'canceled', 'waiting_for_payment')
+                    ORDER BY o3.created_at DESC, o3.id DESC
+                    LIMIT 1
+                ) AS status
+            FROM accounts a
+            WHERE EXISTS (
+                SELECT 1
+                FROM orders o
+                WHERE o.user_id = ?
+                  AND o.username = a.username
+                  AND o.status NOT IN ('archived', 'renewed', 'canceled', 'waiting_for_payment')
+            )
+            ORDER BY a.username ASC
+        """, (user_id, user_id, user_id))
+        return [dict(row) for row in cursor.fetchall()]
+
+
 def get_active_orders_without_time() -> List[Dict]:
     conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row  # خروجی به شکل dict
+    conn.row_factory = sqlite3.Row  # Ø®Ø±ÙˆØ¬ÛŒ Ø¨Ù‡ Ø´Ú©Ù„ dict
     cur = conn.cursor()
 
     cur.execute("""
@@ -620,7 +1153,7 @@ def expire_old_orders():
 
     for row in rows:
         try:
-            expires_at_str = row['expires_at']  # مثلاً: "1403-04-16 09:05"
+            expires_at_str = row['expires_at']  # Ù…Ø«Ù„Ø§Ù‹: "1403-04-16 09:05"
             expires_at = jdatetime.datetime.strptime(expires_at_str, "%Y-%m-%d %H:%M")
             now_jdt = jdatetime.datetime.strptime(now, "%Y-%m-%d %H:%M:%S")
 
@@ -631,38 +1164,7 @@ def expire_old_orders():
                     WHERE id = ?
                 """, (row['id'],))
         except Exception as e:
-            print(f"خطا در بررسی سفارش {row['id']}: {e}")
-
-    conn.commit()
-    conn.close()
-
-
-def expire_old_order_usages():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-
-    now = jdatetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cursor.execute("""
-        SELECT id, expires_at FROM order_usages
-        WHERE status = 'active' AND expires_at IS NOT NULL
-    """)
-    rows = cursor.fetchall()
-
-    for row in rows:
-        try:
-            expires_at_str = row['expires_at']  # مثلاً: "1403-04-16 09:05"
-            expires_at = jdatetime.datetime.strptime(expires_at_str, "%Y-%m-%d %H:%M")
-            now_jdt = jdatetime.datetime.strptime(now, "%Y-%m-%d %H:%M:%S")
-
-            if expires_at < now_jdt:
-                cursor.execute("""
-                    UPDATE order_usages
-                    SET status = 'expired'
-                    WHERE id = ?
-                """, (row['id'],))
-        except Exception as e:
-            print(f"خطا در بررسی سفارش {row['id']}: {e}")
+            print(f"Ø®Ø·Ø§ Ø¯Ø± Ø¨Ø±Ø±Ø³ÛŒ Ø³ÙØ§Ø±Ø´ {row['id']}: {e}")
 
     conn.commit()
     conn.close()
@@ -682,7 +1184,7 @@ def archive_old_orders():
 
     for row in rows:
         try:
-            expires_at_str = row['expires_at']  # مثلاً: "1403-04-16 09:05"
+            expires_at_str = row['expires_at']  # Ù…Ø«Ù„Ø§Ù‹: "1403-04-16 09:05"
             expires_at = jdatetime.datetime.strptime(expires_at_str, "%Y-%m-%d %H:%M")
             now_jdt = jdatetime.datetime.strptime(now, "%Y-%m-%d %H:%M:%S")
             thirty_days_ago_jdt = now_jdt - jdatetime.timedelta(days=45)
@@ -693,47 +1195,8 @@ def archive_old_orders():
                 WHERE id = ?
                 """, (row['id'],))
 
-                cursor.execute("""
-                    UPDATE order_usages
-                    SET status = 'archived'
-                    WHERE order_id = ?
-                    """, (row['id'],))
-
         except Exception as e:
-            print(f"خطا در بررسی سفارش {row['id']}: {e}")
-
-    conn.commit()
-    conn.close()
-
-
-def archive_old_order_usages():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-
-    now = jdatetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cursor.execute("""
-        SELECT id, expires_at FROM order_usages
-        WHERE status = 'expired' or status = 'renewed'
-    """)
-    rows = cursor.fetchall()
-
-    for row in rows:
-        try:
-            expires_at_str = row['expires_at']  # مثلاً: "1403-04-16 09:05"
-            expires_at = jdatetime.datetime.strptime(expires_at_str, "%Y-%m-%d %H:%M")
-            now_jdt = jdatetime.datetime.strptime(now, "%Y-%m-%d %H:%M:%S")
-            thirty_days_ago_jdt = now_jdt - jdatetime.timedelta(days=45)
-            if expires_at < thirty_days_ago_jdt:
-                cursor.execute("""
-                UPDATE order_usages
-                SET status = 'archived'
-                WHERE id = ?
-                """, (row['id'],))
-
-
-        except Exception as e:
-            print(f"خطا در بررسی سفارش {row['id']}: {e}")
+            print(f"Ø®Ø·Ø§ Ø¯Ø± Ø¨Ø±Ø±Ø³ÛŒ Ø³ÙØ§Ø±Ø´ {row['id']}: {e}")
 
     conn.commit()
     conn.close()
@@ -758,7 +1221,16 @@ def get_services_for_renew(user_id):
         cur.execute("""
             SELECT id, username, expires_at, status
             FROM orders
-            WHERE user_id = ? AND status IN ('active','expired') AND expires_at IS NOT NULL
+            WHERE user_id = ?
+              AND status IN ('active', 'expired', 'waiting_for_renewal_not_paid')
+              AND expires_at IS NOT NULL
+            ORDER BY
+                CASE
+                    WHEN status = 'waiting_for_renewal_not_paid' THEN 0
+                    WHEN status = 'active' THEN 1
+                    ELSE 2
+                END,
+                username ASC
         """, (user_id,))
         return [dict(r) for r in cur.fetchall()]
 
@@ -781,8 +1253,52 @@ def get_waiting_for_payment_orders():
         cur.execute("""
                 SELECT * FROM orders
                 WHERE status = 'waiting_for_payment'
+                ORDER BY created_at ASC
             """)
         return [dict(r) for r in cur.fetchall()]
+
+
+def get_user_pending_purchase_orders(user_id: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT
+                o.id,
+                o.user_id,
+                o.plan_id,
+                o.username,
+                o.price,
+                o.status,
+                o.created_at,
+                p.name AS plan_name
+            FROM orders o
+            LEFT JOIN plans p ON p.id = o.plan_id
+            WHERE o.user_id = ?
+              AND o.status = 'waiting_for_payment'
+              AND o.is_renewal_of_order IS NULL
+            ORDER BY o.created_at DESC
+        """, (user_id,))
+        return [dict(r) for r in cur.fetchall()]
+
+
+def get_pending_renewal_order(base_order_id: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT
+                o.*,
+                p.name AS plan_name
+            FROM orders o
+            LEFT JOIN plans p ON p.id = o.plan_id
+            WHERE o.status = 'waiting_for_payment'
+              AND o.is_renewal_of_order = ?
+            ORDER BY o.created_at DESC
+            LIMIT 1
+        """, (base_order_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
 
 
 def get_order_data(order_id):
@@ -851,9 +1367,46 @@ def update_order_last_notif_level(level_needed, order_id):
 def get_order_usage(order_id: int):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
-        cursor.execute("""SELECT total_mb from order_usages where order_id = ?""", (order_id,))
+        cursor.execute("""SELECT usage_total_mb FROM orders WHERE id = ?""", (order_id,))
         row = cursor.fetchone()
         return row[0] if row else 0
+
+
+def get_orders_for_usage_notifications():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                o.id,
+                o.user_id,
+                o.username,
+                o.volume_gb,
+                o.extra_volume_gb,
+                o.usage_total_mb,
+                o.usage_notif_level,
+                u.message_name
+            FROM orders o
+            JOIN plans p ON p.id = o.plan_id
+            LEFT JOIN users u ON u.id = o.user_id
+            WHERE o.status IN ('active', 'waiting_for_renewal', 'waiting_for_renewal_not_paid')
+              AND o.user_id IS NOT NULL
+              AND o.username IS NOT NULL
+              AND COALESCE(p.is_unlimited, 0) = 0
+              AND (COALESCE(o.volume_gb, 0) + COALESCE(o.extra_volume_gb, 0)) > 0
+        """)
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def update_order_usage_notif_level(level_needed: int, order_id: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE orders
+            SET usage_notif_level = ?
+            WHERE id = ?
+        """, (level_needed, order_id))
+        conn.commit()
 
 
 def get_accounts_id_by_username(username: str):
@@ -861,6 +1414,19 @@ def get_accounts_id_by_username(username: str):
         cursor = conn.cursor()
         cursor.execute("SELECT id FROM accounts WHERE username = ?", (username,))
         return cursor.fetchone()
+
+
+def get_account_credentials_by_username(username: str):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, username, password, status, order_id
+            FROM accounts
+            WHERE username = ?
+        """, (username,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
 
 
 def update_account_password_by_username(username: str, new_password: str):
@@ -882,27 +1448,6 @@ def insert_feedback(user_id, feedback_type, message, created_at):
         cursor = conn.cursor()
         cursor.execute("INSERT INTO feedbacks (user_id, type, message, created_at) VALUES (?, ?, ?, ?)",
                        (user_id, feedback_type, message, created_at))
-        conn.commit()
-
-
-def get_orders_usage_for_limitation():
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT ou.id, ou.order_id, ou.username, ou.total_mb, ou.applied_speed,
-                   p.is_unlimited, p.duration_months
-            FROM order_usages ou
-            JOIN orders o ON ou.order_id = o.id
-            JOIN plans p ON o.plan_id = p.id
-            WHERE o.status IN ('active', 'waiting_for_renewal')
-        """)
-        return cursor.fetchall()
-
-
-def save_applied_speed_to_db(applied_speed: str, order_id: int):
-    with sqlite3.connect(DB_PATH) as conn:
-        curses = conn.cursor()
-        curses.execute("""UPDATE order_usages SET applied_speed = ? where order_id=?""", (applied_speed, order_id))
         conn.commit()
 
 
@@ -930,15 +1475,27 @@ def get_active_cards():
         ]
 
 
-def get_active_locations_by_category(category: str):
+def get_active_locations_by_category(category: str, user_id: Optional[int] = None,
+                                     display_context: Optional[str] = None):
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
+        role = _get_user_role_for_plans(conn, user_id)
+        query, params = _apply_plan_audience_filters(
+            """
+            SELECT DISTINCT location
+            FROM plans
+            WHERE category = ?
+              AND visible = 1
+              AND location IS NOT NULL
+            """,
+            [category],
+            user_id=user_id,
+            role=role,
+            display_context=display_context,
+        )
+        query = f"{query}\nORDER BY location ASC"
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT DISTINCT location 
-            FROM plans 
-            WHERE category = ? AND visible = 1 AND location IS NOT NULL ORDER BY order_priority
-        """, (category,))
+        cursor.execute(query, params)
         return [row["location"] for row in cursor.fetchall()]
 
 
@@ -977,7 +1534,7 @@ def set_order_expiry_to_now(expiry_str: str, service_id: int):
 
 
 def get_order_status(order_id: int) -> Optional[str]:
-    """برگرداندن وضعیت فعلی سفارش (status) از جدول orders"""
+    """Ø¨Ø±Ú¯Ø±Ø¯Ø§Ù†Ø¯Ù† ÙˆØ¶Ø¹ÛŒØª ÙØ¹Ù„ÛŒ Ø³ÙØ§Ø±Ø´ (status) Ø§Ø² Ø¬Ø¯ÙˆÙ„ orders"""
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.cursor()
         cur.execute("SELECT status FROM orders WHERE id = ?", (order_id,))
@@ -987,7 +1544,7 @@ def get_order_status(order_id: int) -> Optional[str]:
 
 def get_plan_info(plan_id: int):
     with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row  # خروجی به شکل dict
+        conn.row_factory = sqlite3.Row  # Ø®Ø±ÙˆØ¬ÛŒ Ø¨Ù‡ Ø´Ú©Ù„ dict
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM plans WHERE id = ?", (plan_id,))
         row = cursor.fetchone()
@@ -1012,7 +1569,7 @@ def get_plan_price(plan_id: int) -> int:
 
 def get_auto_renew_orders():
     with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row  # خروجی به شکل dict
+        conn.row_factory = sqlite3.Row  # Ø®Ø±ÙˆØ¬ÛŒ Ø¨Ù‡ Ø´Ú©Ù„ dict
         cursor = conn.cursor()
 
         now = jdatetime.datetime.now()
@@ -1112,7 +1669,7 @@ def get_user_display_name(user_id: int) -> str:
         row = cursor.fetchone()
 
         if not row:
-            return f"کاربر {user_id}"
+            return f"Ú©Ø§Ø±Ø¨Ø± {user_id}"
 
         first_name, username = row
 
@@ -1123,7 +1680,7 @@ def get_user_display_name(user_id: int) -> str:
         if username:
             return f"@{username}"
 
-        return f"کاربر {user_id}"
+        return f"Ú©Ø§Ø±Ø¨Ø± {user_id}"
 
 
 def get_distinct_usernames_by_user_id(user_id: int):
@@ -1134,6 +1691,7 @@ def get_distinct_usernames_by_user_id(user_id: int):
             FROM orders
             WHERE user_id = ?
               AND username IS NOT NULL
+              AND status NOT IN ('archived', 'renewed')
             ORDER BY username
         """, (user_id,))
         rows = cursor.fetchall()
@@ -1165,7 +1723,7 @@ def transfer_orders_by_username_to_another_user(from_user_id: int, to_user_id: i
         total_orders = row[0] if row else 0
 
         if total_orders == 0:
-            return False, "برای این اکانت سفارشی پیدا نشد.", 0
+            return False, "Ø¨Ø±Ø§ÛŒ Ø§ÛŒÙ† Ø§Ú©Ø§Ù†Øª Ø³ÙØ§Ø±Ø´ÛŒ Ù¾ÛŒØ¯Ø§ Ù†Ø´Ø¯.", 0
 
         cursor.execute("""
             UPDATE orders
@@ -1173,5 +1731,18 @@ def transfer_orders_by_username_to_another_user(from_user_id: int, to_user_id: i
             WHERE user_id = ? AND username = ?
         """, (to_user_id, from_user_id, username))
 
+        cursor.execute("""
+            INSERT INTO ownership_transfers (
+                from_user_id,
+                to_user_id,
+                username,
+                transferred_by,
+                transferred_at,
+                total_orders
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (from_user_id, to_user_id, username, from_user_id, datetime.now().isoformat(), total_orders))
+
         conn.commit()
         return True, None, total_orders
+
