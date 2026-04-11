@@ -17,6 +17,7 @@ from services.db import (
     get_plan_name,
     get_account_credentials_by_username,
 )
+from services.usage_policy import get_volume_policy_alert
 
 
 def activate_waiting_for_payment_orders() -> None:
@@ -111,7 +112,7 @@ def _notify_user_purchase_activated(order: dict, new_balance: int) -> None:
         lines.append(f"🔐 رمز عبور: <code>{password}</code>")
     lines.extend([
         f"💰 موجودی: {format_price(new_balance)} تومان",
-        "⚠️ پس از اتمام حجم این سرویس، اتصال آن قطع می‌شود.",
+        get_volume_policy_alert(),
     ])
     _send_notification(order["user_id"], "\n".join(lines))
 
@@ -124,7 +125,7 @@ def _notify_user_renewal_activated(order: dict, new_balance: int) -> None:
         f"🔸 پلن: {plan_name}\n"
         f"👤 نام کاربری: <code>{username}</code>\n"
         f"💰 موجودی: {format_price(new_balance)} تومان\n"
-        f"⚠️ پس از اتمام حجم این سرویس، اتصال آن قطع می‌شود."
+        f"{get_volume_policy_alert()}"
     )
     _send_notification(order["user_id"], msg)
 
@@ -138,6 +139,6 @@ def _notify_user_renewal_reserved(order: dict, new_balance: int) -> None:
         f"🔸 پلن: {plan_name}\n"
         f"👤 نام کاربری: <code>{username}</code>\n"
         f"💰 موجودی: {format_price(new_balance)} تومان\n"
-        f"⚠️ پس از اتمام حجم این سرویس، اتصال آن قطع می‌شود."
+        f"{get_volume_policy_alert()}"
     )
     _send_notification(order["user_id"], msg)

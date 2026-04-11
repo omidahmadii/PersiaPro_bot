@@ -19,6 +19,7 @@ def admin_main_menu_keyboard():
             [KeyboardButton(text="📢 ارسال پیام"), KeyboardButton(text="💳 مدیریت کارت‌ها")],
             [KeyboardButton(text="📦 مدیریت پلن‌ها"), KeyboardButton(text="🎯 مخاطب پلن‌ها")],
             [KeyboardButton(text="📑 گزارشات"), KeyboardButton(text="🚀 فعال‌سازی سرویس ذخیره")],
+            [KeyboardButton(text="🧾 مدیریت سفارش‌ها"), KeyboardButton(text="📚 مدیریت بسته‌های حجمی")],
             [KeyboardButton(text="🌐 مدیریت رکوردها"), KeyboardButton(text="⚙️ تنظیمات ربات")],
             [KeyboardButton(text="تغییر رمز عبور")],
             [KeyboardButton(text="📂 سایر امکانات")],
@@ -32,8 +33,7 @@ def admin_other_features_keyboard():
         keyboard=[
             [KeyboardButton(text="📄 تمدید سرویس"), KeyboardButton(text="🛒 خرید سرویس")],
             [KeyboardButton(text="👤 حساب کاربری"), KeyboardButton(text="📦 سرویس‌های من")],
-            [KeyboardButton(text="🔐 تغییر رمز سرویس"), KeyboardButton(text="💳 شارژ حساب")],
-            [KeyboardButton(text="💷 تعرفه ها")],
+            [KeyboardButton(text="📦 خرید حجم اضافه"), KeyboardButton(text="💷 تعرفه ها")],
             [KeyboardButton(text="🔁 انتقال مالکیت سرویس"), KeyboardButton(text="🚀 فعال‌سازی سرویس ذخیره")],
             [KeyboardButton(text="🎫 پشتیبانی"), KeyboardButton(text="📚 آموزش")],
             [KeyboardButton(text="❓ سوالات متداول"), KeyboardButton(text="📬 انتقادات و پیشنهادات")],
@@ -47,8 +47,9 @@ def user_main_menu_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🛒 خرید سرویس"), KeyboardButton(text="📄 تمدید سرویس")],
-            [KeyboardButton(text="👤 حساب کاربری"), KeyboardButton(text="📦 سرویس‌های من")],
-            [KeyboardButton(text="🔁 انتقال مالکیت سرویس"), KeyboardButton(text="📚 آموزش")],
+            [KeyboardButton(text="📦 خرید حجم اضافه"), KeyboardButton(text="📦 سرویس‌های من")],
+            [KeyboardButton(text="👤 حساب کاربری"), KeyboardButton(text="🚀 فعال‌سازی سرویس ذخیره")],
+            [KeyboardButton(text="🔁 انتقال مالکیت سرویس"), KeyboardButton(text="🔐 تغییر رمز سرویس")],
             [KeyboardButton(text="📂 سایر امکانات")],
         ],
         resize_keyboard=True,
@@ -59,10 +60,9 @@ def user_main_menu_keyboard():
 def user_other_features_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="🔐 تغییر رمز سرویس"), KeyboardButton(text="💳 شارژ حساب")],
-            [KeyboardButton(text="💷 تعرفه ها")],
-            [KeyboardButton(text="🚀 فعال‌سازی سرویس ذخیره"), KeyboardButton(text="🎫 پشتیبانی")],
-            [KeyboardButton(text="📬 انتقادات و پیشنهادات"), KeyboardButton(text="❓ سوالات متداول")],
+            [KeyboardButton(text="💷 تعرفه ها"), KeyboardButton(text="🎫 پشتیبانی")],
+            [KeyboardButton(text="📚 آموزش"), KeyboardButton(text="❓ سوالات متداول")],
+            [KeyboardButton(text="📬 انتقادات و پیشنهادات")],
             [KeyboardButton(text="⬅️ بازگشت به منوی اصلی")],
         ],
         resize_keyboard=True,

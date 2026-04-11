@@ -13,6 +13,7 @@ from services.db import (
     update_order_status,
     get_order_plan_duration, get_order_plan_group_name,
 )
+from services.usage_policy import get_volume_policy_alert
 
 
 # ----------------------------------------------------------------------------
@@ -90,7 +91,7 @@ def _notify_user_activation(reserved_order: dict, duration_months: int) -> None:
     msg = (
         f"✅ دوست عزیز،\n"
         f"سرویس رزرو شما با نام کاربری <code>{username}</code> با موفقیت فعال شد.\n"
-        f"⚠️ پس از اتمام حجم این سرویس، اتصال آن قطع می‌شود.\n\n"
+        f"{get_volume_policy_alert()}\n\n"
         f"✨ در صورت بروز هرگونه مشکل با پشتیبانی در تماس باشید."
     )
 

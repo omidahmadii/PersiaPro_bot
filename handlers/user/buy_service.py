@@ -32,14 +32,21 @@ from services.db import (
     update_order_status,
 )
 from services.runtime_settings import get_access_mode_setting, get_bool_setting, get_text_setting
+from services.usage_policy import get_volume_policy_alert, get_volume_policy_text
 
 router = Router()
 
 DEFAULT_MEMBERSHIP_REQUIRED_TEXT = "🔒 برای استفاده از این بخش باید عضو کانال PersiaPro باشید."
 DEFAULT_BUY_DISABLED_TEXT = "در حال حاضر فروش سرویس جدید غیر فعال می باشد."
 DEFAULT_BUY_NO_ACTIVE_PLANS_TEXT = "در حال حاضر پلن فعالی برای فروش موجود نیست."
-VOLUME_POLICY_TEXT = "ℹ️ پس از اتمام حجم سرویس، اتصال آن قطع می‌شود."
-VOLUME_POLICY_ALERT = "⚠️ پس از اتمام حجم این سرویس، اتصال آن قطع می‌شود."
+
+
+def volume_policy_text() -> str:
+    return get_volume_policy_text()
+
+
+def volume_policy_alert() -> str:
+    return get_volume_policy_alert()
 
 
 def is_buy_enabled() -> bool:
@@ -66,22 +73,63 @@ def get_buy_no_active_plans_text() -> str:
     return get_text_setting("message_buy_no_active_plans", DEFAULT_BUY_NO_ACTIVE_PLANS_TEXT)
 
 
+def build_buy_access_blocked_text(current_balance: int, min_price: int) -> str:
+    required_amount = max(int(min_price or 0) - int(current_balance or 0), 0)
+    lines = [get_buy_disabled_text()]
+
+    if min_price > 0:
+        lines.extend([
+            "",
+            f"💳 موجودی فعلی شما: {format_price(current_balance)} تومان",
+            f"💰 حداقل موجودی لازم برای باز شدن خرید: {format_price(min_price)} تومان",
+        ])
+        if required_amount > 0:
+            lines.append(f"➕ مبلغ موردنیاز برای باز شدن خرید: {format_price(required_amount)} تومان")
+
+    return "\n".join(lines)
+
+
+def get_buy_access_block_message(user_id: int) -> Optional[str]:
+    if not is_buy_enabled():
+        return get_buy_disabled_text()
+
+    buy_plans = get_buy_plans(user_id=user_id)
+    active_plans = [plan for plan in buy_plans if _is_active(plan)]
+    if not active_plans:
+        return None
+
+    if not is_buy_funded_only_mode():
+        return None
+
+    if get_user_pending_purchase_orders(user_id):
+        return None
+
+    current_balance = int(get_user_balance(user_id) or 0)
+    min_price = get_min_active_plan_price(active_plans)
+    if current_balance >= min_price:
+        return None
+
+    return build_buy_access_blocked_text(current_balance, min_price)
+
+
 async def ensure_buy_enabled_message(message: Message, state: FSMContext) -> bool:
-    if is_buy_enabled():
+    blocked_text = get_buy_access_block_message(message.from_user.id)
+    if blocked_text is None:
         return True
 
     await state.clear()
-    await message.answer(get_buy_disabled_text(), reply_markup=main_menu_keyboard_for_user(message.from_user.id))
+    await message.answer(blocked_text, reply_markup=main_menu_keyboard_for_user(message.from_user.id))
     return False
 
 
 async def ensure_buy_enabled_callback(callback: CallbackQuery, state: FSMContext) -> bool:
-    if is_buy_enabled():
+    blocked_text = get_buy_access_block_message(callback.from_user.id)
+    if blocked_text is None:
         return True
 
     await state.clear()
     await callback.message.answer(
-        get_buy_disabled_text(),
+        blocked_text,
         reply_markup=main_menu_keyboard_for_user(callback.from_user.id),
     )
     return False
@@ -503,7 +551,7 @@ async def start_buy(message: Message, state: FSMContext):
         "🚨 توجه قبل از خرید\n"
         f"حداکثر تعداد اکانت فعال مجاز برای شما: {max_active_accounts} عدد\n"
         f"📦 تعداد اکانت فعال فعلی شما: {active_orders_count} عدد\n\n"
-        f"{VOLUME_POLICY_TEXT}"
+        + volume_policy_text()
     )
     await message.answer(text, reply_markup=markup)
 
@@ -527,7 +575,7 @@ async def choose_category(callback: CallbackQuery, state: FSMContext):
         await state.set_state(BuyServiceStates.choosing_duration)
         text = (
             "مدت زمان سرویس را انتخاب کنید:\n"
-            f"{VOLUME_POLICY_TEXT}"
+            + volume_policy_text()
         )
         return await callback.message.edit_text(text, reply_markup=keyboard_durations(plans))
 
@@ -568,7 +616,7 @@ async def choose_location(callback: CallbackQuery, state: FSMContext):
     await state.set_state(BuyServiceStates.choosing_duration)
     text = (
         "مدت زمان سرویس را انتخاب کنید:\n"
-        f"{VOLUME_POLICY_TEXT}"
+        + volume_policy_text()
     )
     await callback.message.edit_text(text, reply_markup=keyboard_durations(plans, back_to="location"))
 
@@ -608,7 +656,7 @@ async def choose_duration(callback: CallbackQuery, state: FSMContext):
         f"📅 مدت زمان: {selected_plan['name']}",
         f"💰 مبلغ: {price_text} تومان",
         "",
-        VOLUME_POLICY_TEXT,
+        volume_policy_text(),
         "",
         "لطفاً تایید کنید:",
     ]
@@ -728,7 +776,7 @@ async def confirm_and_create(callback: CallbackQuery, state: FSMContext):
         f"👤 نام کاربری: `{account_username}`\n"
         f"🔐 رمز: `{account_password}`\n"
         f"💰 موجودی: {format_price(new_balance)} تومان\n"
-        f"{VOLUME_POLICY_ALERT}",
+        + volume_policy_alert(),
         parse_mode="Markdown",
             reply_markup=main_menu_keyboard_for_user(user_id)
     )
@@ -805,7 +853,7 @@ async def go_back(callback: CallbackQuery, state: FSMContext):
             await state.set_state(BuyServiceStates.choosing_duration)
             text = (
                 "مدت زمان سرویس را انتخاب کنید:\n"
-                f"{VOLUME_POLICY_TEXT}"
+                + volume_policy_text()
             )
             return await callback.message.edit_text(text, reply_markup=markup)
 
@@ -841,7 +889,7 @@ async def go_back(callback: CallbackQuery, state: FSMContext):
             await state.set_state(BuyServiceStates.choosing_duration)
             text = (
                 "مدت زمان سرویس را انتخاب کنید:\n"
-                f"{VOLUME_POLICY_TEXT}"
+                + volume_policy_text()
             )
             return await callback.message.edit_text(text, reply_markup=keyboard_durations(plans))
 
@@ -855,7 +903,7 @@ async def go_back(callback: CallbackQuery, state: FSMContext):
             await state.set_state(BuyServiceStates.choosing_duration)
             text = (
                 "مدت زمان سرویس را انتخاب کنید:\n"
-                f"{VOLUME_POLICY_TEXT}"
+                + volume_policy_text()
             )
             return await callback.message.edit_text(
                 text,
@@ -875,7 +923,7 @@ async def go_back(callback: CallbackQuery, state: FSMContext):
             await state.set_state(BuyServiceStates.choosing_duration)
             text = (
                 "مدت زمان سرویس را انتخاب کنید:\n"
-                f"{VOLUME_POLICY_TEXT}"
+                + volume_policy_text()
             )
             return await callback.message.edit_text(text, reply_markup=markup)
 

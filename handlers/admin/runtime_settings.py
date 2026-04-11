@@ -6,13 +6,14 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from config import ADMINS
 from keyboards.main_menu import admin_main_menu_keyboard
 from services.runtime_settings import (
-    ACCESS_MODE_SETTING_KEYS,
+    CHOICE_SETTING_KEYS,
     FEATURE_SETTING_KEYS,
     TEXT_SETTING_KEYS,
     SETTING_DEFINITIONS,
-    get_access_mode_label,
-    get_access_mode_setting,
     get_bool_setting,
+    get_choice_label,
+    get_choice_options,
+    get_choice_setting,
     get_default_setting_value,
     get_text_setting,
     reset_text_settings,
@@ -40,6 +41,51 @@ def _preview_text(value: str, limit: int = 64) -> str:
     return compact[: limit - 1] + "…"
 
 
+def _choice_icon(key: str) -> str:
+    if key == "usage_limit_speed":
+        return "⚡"
+    return "👥"
+
+
+def choice_keyboard(key: str) -> InlineKeyboardMarkup:
+    options = list(get_choice_options(key).items())
+    current_value = get_choice_setting(key)
+    rows: list[list[InlineKeyboardButton]] = []
+    current_row: list[InlineKeyboardButton] = []
+    columns = 3 if key == "usage_limit_speed" else 1
+
+    for value, label in options:
+        prefix = "✅ " if value == current_value else ""
+        current_row.append(
+            InlineKeyboardButton(
+                text=f"{prefix}{label}",
+                callback_data=f"settings|choice_set|{key}|{value}",
+            )
+        )
+        if len(current_row) == columns:
+            rows.append(current_row)
+            current_row = []
+
+    if current_row:
+        rows.append(current_row)
+
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت به تنظیمات", callback_data="settings|menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def build_choice_text(key: str) -> str:
+    label = SETTING_DEFINITIONS[key]["label"]
+    current_value = get_choice_setting(key)
+    lines = [
+        f"{_choice_icon(key)} تنظیم «{label}»",
+        "",
+        f"مقدار فعلی: {get_choice_label(key, current_value)}",
+        "",
+        "یکی از گزینه‌های زیر را انتخاب کنید:",
+    ]
+    return "\n".join(lines)
+
+
 def settings_keyboard() -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
 
@@ -51,20 +97,14 @@ def settings_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text=f"{icon} {label}", callback_data=f"settings|toggle|{key}")]
         )
 
-    for key in ACCESS_MODE_SETTING_KEYS:
+    for key in CHOICE_SETTING_KEYS:
         label = SETTING_DEFINITIONS[key]["label"]
-        mode = get_access_mode_setting(key)
+        mode = get_choice_setting(key)
         rows.append(
-            [InlineKeyboardButton(text=f"👥 {label}: {get_access_mode_label(mode)}", callback_data=f"settings|mode|{key}")]
+            [InlineKeyboardButton(text=f"{_choice_icon(key)} {label}: {get_choice_label(key, mode)}", callback_data=f"settings|choice|{key}")]
         )
 
-    for key in TEXT_SETTING_KEYS:
-        label = SETTING_DEFINITIONS[key]["label"]
-        rows.append(
-            [InlineKeyboardButton(text=f"✏️ {label}", callback_data=f"settings|edit|{key}")]
-        )
-
-    rows.append([InlineKeyboardButton(text="♻️ بازنشانی همه پیام‌ها", callback_data="settings|reset_messages")])
+    rows.append([InlineKeyboardButton(text="✏️ ویرایش پیام‌ها", callback_data="settings|messages")])
     rows.append(
         [
             InlineKeyboardButton(text="↻ بروزرسانی", callback_data="settings|menu"),
@@ -89,21 +129,50 @@ def build_settings_text() -> str:
         enabled = get_bool_setting(key, default=get_default_setting_value(key) == "1")
         lines.append(f"• {label}: {'✅ فعال' if enabled else '🚫 غیرفعال'}")
 
-    lines.extend(["", "سیاست دسترسی:"])
+    lines.extend(["", "تنظیمات انتخابی:"])
 
-    for key in ACCESS_MODE_SETTING_KEYS:
+    for key in CHOICE_SETTING_KEYS:
         label = SETTING_DEFINITIONS[key]["label"]
-        mode = get_access_mode_setting(key)
-        lines.append(f"• {label}: {get_access_mode_label(mode)}")
+        mode = get_choice_setting(key)
+        lines.append(f"• {label}: {get_choice_label(key, mode)}")
 
-    lines.extend(["", "پیام‌های قابل ویرایش:"])
+    lines.extend([
+        "",
+        "پیام‌های قابل ویرایش:",
+        "• از بخش «ویرایش پیام‌ها» برای دیدن و تغییر متن‌ها استفاده کنید.",
+        "",
+        "برای تغییر هر مورد، دکمه‌ی مربوط به آن را بزنید.",
+    ])
+    return "\n".join(lines)
+
+
+def message_settings_keyboard() -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+
+    for key in TEXT_SETTING_KEYS:
+        label = SETTING_DEFINITIONS[key]["label"]
+        rows.append(
+            [InlineKeyboardButton(text=f"✏️ {label}", callback_data=f"settings|edit|{key}")]
+        )
+
+    rows.append([InlineKeyboardButton(text="♻️ بازنشانی همه پیام‌ها", callback_data="settings|messages_reset")])
+    rows.append([InlineKeyboardButton(text="⬅️ بازگشت به تنظیمات", callback_data="settings|menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def build_message_settings_text() -> str:
+    lines = [
+        "✏️ ویرایش پیام‌ها",
+        "",
+        "پیش‌نمایش متن‌های قابل ویرایش:",
+    ]
 
     for key in TEXT_SETTING_KEYS:
         label = SETTING_DEFINITIONS[key]["label"]
         preview = _preview_text(get_text_setting(key, ""))
         lines.append(f"• {label}: {preview}")
 
-    lines.extend(["", "برای تغییر هر مورد، دکمه‌ی مربوط به آن را بزنید."])
+    lines.extend(["", "برای ویرایش هر پیام، دکمه‌ی همان مورد را بزنید."])
     return "\n".join(lines)
 
 
@@ -113,6 +182,14 @@ async def _show_settings_panel_message(message: Message) -> None:
 
 async def _show_settings_panel_callback(callback: CallbackQuery) -> None:
     await callback.message.edit_text(build_settings_text(), reply_markup=settings_keyboard())
+
+
+async def _show_message_settings_panel_message(message: Message) -> None:
+    await message.answer(build_message_settings_text(), reply_markup=message_settings_keyboard())
+
+
+async def _show_message_settings_panel_callback(callback: CallbackQuery) -> None:
+    await callback.message.edit_text(build_message_settings_text(), reply_markup=message_settings_keyboard())
 
 
 @router.message(F.text == "⚙️ تنظیمات ربات")
@@ -150,22 +227,51 @@ async def runtime_settings_toggle(callback: CallbackQuery):
     await _show_settings_panel_callback(callback)
 
 
-@router.callback_query(F.data.startswith("settings|mode|"))
-async def runtime_settings_change_mode(callback: CallbackQuery):
+@router.callback_query(F.data.startswith("settings|choice|"))
+async def runtime_settings_change_choice(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
         return await callback.answer("دسترسی ندارید.", show_alert=True)
 
     _, _, key = callback.data.split("|", 2)
-    if key not in ACCESS_MODE_SETTING_KEYS:
+    if key not in CHOICE_SETTING_KEYS:
         return await callback.answer("تنظیمات نامعتبر است.", show_alert=True)
 
-    current_mode = get_access_mode_setting(key)
-    new_mode = "all" if current_mode == "funded_only" else "funded_only"
-    set_setting(key, new_mode, value_type="choice")
+    if not get_choice_options(key):
+        return await callback.answer("گزینه‌ای برای این تنظیم تعریف نشده است.", show_alert=True)
+
+    await callback.message.edit_text(
+        build_choice_text(key),
+        reply_markup=choice_keyboard(key),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("settings|choice_set|"))
+async def runtime_settings_set_choice(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("دسترسی ندارید.", show_alert=True)
+
+    _, _, key, value = callback.data.split("|", 3)
+    if key not in CHOICE_SETTING_KEYS:
+        return await callback.answer("تنظیمات نامعتبر است.", show_alert=True)
+
+    if value not in get_choice_options(key):
+        return await callback.answer("گزینه انتخاب‌شده معتبر نیست.", show_alert=True)
+
+    set_setting(key, value, value_type="choice")
 
     label = SETTING_DEFINITIONS[key]["label"]
-    await callback.answer(f"{label} روی «{get_access_mode_label(new_mode)}» قرار گرفت.")
+    await callback.answer(f"{label} روی «{get_choice_label(key, value)}» قرار گرفت.")
     await _show_settings_panel_callback(callback)
+
+
+@router.callback_query(F.data == "settings|messages")
+async def runtime_settings_messages_menu(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("دسترسی ندارید.", show_alert=True)
+
+    await state.clear()
+    await _show_message_settings_panel_callback(callback)
 
 
 @router.callback_query(F.data.startswith("settings|edit|"))
@@ -188,7 +294,7 @@ async def runtime_settings_edit(callback: CallbackQuery, state: FSMContext):
     )
 
 
-@router.callback_query(F.data == "settings|reset_messages")
+@router.callback_query(F.data.in_({"settings|reset_messages", "settings|messages_reset"}))
 async def runtime_settings_reset_messages(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         return await callback.answer("دسترسی ندارید.", show_alert=True)
@@ -196,7 +302,7 @@ async def runtime_settings_reset_messages(callback: CallbackQuery, state: FSMCon
     await state.clear()
     reset_text_settings()
     await callback.answer("همه پیام‌ها به مقدار پیش‌فرض برگشتند.")
-    await _show_settings_panel_callback(callback)
+    await _show_message_settings_panel_callback(callback)
 
 
 @router.callback_query(F.data == "settings|close")
@@ -221,7 +327,7 @@ async def runtime_settings_receive_text(message: Message, state: FSMContext):
 
     if text in {"لغو", "انصراف"}:
         await state.clear()
-        return await _show_settings_panel_message(message)
+        return await _show_message_settings_panel_message(message)
 
     data = await state.get_data()
     key = data.get("setting_key")
@@ -234,6 +340,6 @@ async def runtime_settings_receive_text(message: Message, state: FSMContext):
     label = SETTING_DEFINITIONS[key]["label"]
     await state.clear()
     await message.answer(
-        f"✅ «{label}» با موفقیت ذخیره شد.\n\n{build_settings_text()}",
-        reply_markup=settings_keyboard(),
+        f"✅ «{label}» با موفقیت ذخیره شد.\n\n{build_message_settings_text()}",
+        reply_markup=message_settings_keyboard(),
     )

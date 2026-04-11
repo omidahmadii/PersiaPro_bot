@@ -9,6 +9,7 @@ from services import db, IBSng
 from services.IBSng import change_group
 from services.admin_notifier import send_message_to_admins
 from services.db import get_auto_renew_orders
+from services.usage_policy import get_volume_policy_alert
 
 
 def format_price(amount: Union[int, float]) -> str:
@@ -64,7 +65,7 @@ async def auto_renew():
                     f"🔸 پلن: {plan_name}\n"
                     f"👤 نام کاربری: <code>{order_username}</code>\n"
                     f"💰 موجودی: {format_price(new_balance)} تومان\n"
-                    f"⚠️ پس از اتمام حجم این سرویس، اتصال آن قطع می‌شود."
+                    f"{get_volume_policy_alert()}"
                 )
                 await _notify_user(user_id=user_id, text=text_user)
 
@@ -84,7 +85,7 @@ async def auto_renew():
                     f"✅ دوست عزیز،\n"
                     f"سرویس شما با نام کاربری <code>{order_username}</code> به صورت خودکار تمدید "
                     f"و پس از پایان دوره‌ی فعلی به‌صورت خودکار فعال می شود.\n"
-                    f"⚠️ پس از اتمام حجم این سرویس، اتصال آن قطع می‌شود.\n\n"
+                    f"{get_volume_policy_alert()}\n\n"
                     f"✨ در صورت بروز هرگونه مشکل با پشتیبانی در تماس باشید."
                 )
                 await _notify_user(user_id=user_id, text=text_user)

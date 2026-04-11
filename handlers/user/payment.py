@@ -44,7 +44,6 @@ COMMON_AMOUNTS = [
 
 
 class PaymentStates(StatesGroup):
-    waiting_for_receipt = State()
     choosing_amount = State()
     typing_amount = State()
     choosing_destination_card = State()
@@ -241,7 +240,7 @@ def build_cards_text() -> str:
         lines.append(f"🏦 {card.get('bank_name') or '-'} به نام {card.get('owner_name') or '-'}")
         lines.append(f"<code>{mask_card_number(card.get('card_number'))}</code>")
         lines.append("")
-    lines.append("📸 بعد از واریز، عکس فیش را بفرست تا ثبت اطلاعات را شروع کنیم.")
+    lines.append("📸 بعد از واریز، کافی است تصویر فیش را همین‌جا بفرستید تا ثبت پرداخت شروع شود.")
     return "\n".join(lines)
 
 
@@ -399,27 +398,15 @@ async def prompt_confirmation(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(F.text.in_({"💳 شارژ حساب", "💳 شماره کارت", "💳 دریافت شماره کارت"}))
+@router.message(F.text.in_({"💳 شارژ حساب", "💳 شماره کارت", "💳 دریافت شماره کارت", "شماره کارت"}))
 async def start_topup_flow(message: Message, state: FSMContext):
     ensure_user_record(message)
     await state.clear()
-    await state.set_state(PaymentStates.waiting_for_receipt)
     await message.answer(
         build_cards_text(),
         parse_mode="HTML",
         reply_markup=main_menu_keyboard_for_user(message.from_user.id),
     )
-
-
-@router.message(PaymentStates.waiting_for_receipt)
-async def waiting_for_receipt_message(message: Message, state: FSMContext, bot: Bot):
-    if message.photo:
-        handled = await register_receipt_upload(message, state, bot)
-        if handled:
-            return
-
-    await message.answer("📸 لطفاً عکس فیش را بفرست تا ثبت اطلاعات را ادامه بدهیم.")
-
 
 @router.message(F.photo)
 async def catch_any_photo_as_receipt(message: Message, state: FSMContext, bot: Bot):
@@ -684,4 +671,3 @@ async def cancel_payment_flow(callback: CallbackQuery, state: FSMContext):
         reply_markup=main_menu_keyboard_for_user(callback.from_user.id),
     )
     await callback.answer("لغو شد.")
-

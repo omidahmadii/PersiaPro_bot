@@ -9,7 +9,7 @@ from services.db import get_active_cards, update_last_name
 router = Router()
 
 
-@router.message(F.text == "💳 شماره کارت")
+@router.message(F.text.in_({"💳 شماره کارت", "شماره کارت"}))
 async def show_cards(message: Message):
     user_id = message.from_user.id
     last_name = message.from_user.last_name

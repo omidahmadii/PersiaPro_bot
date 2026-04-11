@@ -1,264 +1,359 @@
 import sqlite3
-from typing import Optional, List, Tuple
+from typing import Optional, Union
 
-from aiogram import Router, F
+from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from config import DB_PATH, ADMINS
+from config import ADMINS, DB_PATH
 from keyboards.main_menu import admin_main_menu_keyboard
+from services.db import get_plan_info, get_plans_for_admin, set_plan_archived
 
 router = Router()
 
-# --- helper DB functions ---
-def get_all_plans() -> List[Tuple]:
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("SELECT id, name, volume_gb, duration_months, duration_days, max_users, price, order_priority, visible, location, is_unlimited, group_name FROM plans ORDER BY order_priority DESC, id ASC")
-    rows = cur.fetchall()
-    conn.close()
-    return rows
 
-def get_plan(plan_id: int) -> Optional[Tuple]:
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("SELECT id, name, volume_gb, duration_months, duration_days, max_users, price, order_priority, visible, location, is_unlimited, group_name FROM plans WHERE id = ?", (plan_id,))
-    row = cur.fetchone()
-    conn.close()
-    return row
-
-def add_plan_to_db(name, volume_gb, duration_months, duration_days, max_users, price, order_priority=0, visible=1, location=None, is_unlimited=0, group_name=None):
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute(
-        """INSERT INTO plans (name, volume_gb, duration_months, duration_days, max_users, price, order_priority, visible, location, is_unlimited, group_name, access_level, display_context)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'all', 'all')""",
-        (name, volume_gb, duration_months, duration_days, max_users, price, order_priority, visible, location, is_unlimited, group_name)
-    )
-    conn.commit()
-    conn.close()
-
-def update_plan_field(plan_id: int, field: str, value):
-    allowed = ["name", "volume_gb", "duration_months", "duration_days", "max_users", "price", "order_priority", "visible", "location", "is_unlimited", "group_name"]
-    if field not in allowed:
-        return False
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute(f"UPDATE plans SET {field} = ? WHERE id = ?", (value, plan_id))
-    conn.commit()
-    conn.close()
-    return True
-
-def delete_plan_from_db(plan_id: int):
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("DELETE FROM plan_segments WHERE plan_id = ?", (plan_id,))
-    cur.execute("DELETE FROM plans WHERE id = ?", (plan_id,))
-    conn.commit()
-    conn.close()
-
-
-# --- FSM states ---
 class PlanStates(StatesGroup):
-    waiting_for_action = State()
     waiting_for_value = State()
     waiting_for_add = State()
 
 
-# --- admin check ---
 def is_admin(user_id: int) -> bool:
-    return str(user_id) in [str(a) for a in ADMINS]
+    return str(user_id) in {str(admin_id) for admin_id in ADMINS}
 
 
-# --- نمایش لیست پلن‌ها ---
+def format_price(amount: int) -> str:
+    try:
+        return f"{int(amount):,}"
+    except Exception:
+        return str(amount)
+
+
+def update_plan_field(plan_id: int, field: str, value) -> bool:
+    allowed_fields = {
+        "name",
+        "volume_gb",
+        "duration_months",
+        "duration_days",
+        "max_users",
+        "price",
+        "order_priority",
+        "visible",
+        "location",
+        "is_unlimited",
+        "group_name",
+    }
+    if field not in allowed_fields:
+        return False
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute(f"UPDATE plans SET {field} = ? WHERE id = ?", (value, plan_id))
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def add_plan_to_db(
+    name: str,
+    volume_gb: int,
+    duration_months: int,
+    duration_days: int,
+    max_users: int,
+    price: int,
+    order_priority: int = 0,
+) -> int:
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO plans (
+                name,
+                volume_gb,
+                duration_months,
+                duration_days,
+                max_users,
+                price,
+                order_priority,
+                visible,
+                is_archived,
+                access_level,
+                display_context
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, 'all', 'all')
+            """,
+            (name, volume_gb, duration_months, duration_days, max_users, price, order_priority),
+        )
+        conn.commit()
+        return int(cursor.lastrowid)
+
+
+def delete_plan_from_db(plan_id: int) -> bool:
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM plan_segments WHERE plan_id = ?", (plan_id,))
+        cursor.execute("DELETE FROM plans WHERE id = ?", (plan_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def plans_list_keyboard(include_archived: bool = False) -> InlineKeyboardMarkup:
+    rows = []
+    for plan in get_plans_for_admin(include_archived=include_archived):
+        visible_icon = "✅" if int(plan.get("visible") or 0) == 1 else "🚫"
+        label = f"#{plan['id']} | {visible_icon} {plan['name']} | {format_price(plan['price'])} تومان"
+        rows.append([
+            InlineKeyboardButton(
+                text=label[:64],
+                callback_data=f"plan_mgmt|open|{plan['id']}",
+            )
+        ])
+
+    if include_archived:
+        rows.append([InlineKeyboardButton(text="📦 پلن‌های فعال", callback_data="plan_mgmt|list|active")])
+    else:
+        rows.append([InlineKeyboardButton(text="🗂 پلن‌های آرشیوشده", callback_data="plan_mgmt|list|archived")])
+        rows.append([InlineKeyboardButton(text="➕ افزودن پلن جدید", callback_data="plan_mgmt|add")])
+    rows.append([InlineKeyboardButton(text="🏠 منوی ادمین", callback_data="plan_mgmt|main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def plan_detail_keyboard(plan_id: int, archived: bool) -> InlineKeyboardMarkup:
+    archive_text = "♻️ خروج از آرشیو" if archived else "🗂 آرشیو پلن"
+    list_target = "archived" if archived else "active"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✏️ نام", callback_data=f"plan_mgmt|edit|name|{plan_id}")],
+            [InlineKeyboardButton(text="📦 حجم", callback_data=f"plan_mgmt|edit|volume_gb|{plan_id}")],
+            [InlineKeyboardButton(text="🗓 ماه", callback_data=f"plan_mgmt|edit|duration_months|{plan_id}")],
+            [InlineKeyboardButton(text="📅 روز", callback_data=f"plan_mgmt|edit|duration_days|{plan_id}")],
+            [InlineKeyboardButton(text="👥 یوزرها", callback_data=f"plan_mgmt|edit|max_users|{plan_id}")],
+            [InlineKeyboardButton(text="💰 قیمت", callback_data=f"plan_mgmt|edit|price|{plan_id}")],
+            [InlineKeyboardButton(text="🔢 اولویت", callback_data=f"plan_mgmt|edit|order_priority|{plan_id}")],
+            [InlineKeyboardButton(text="✅/🚫 نمایش", callback_data=f"plan_mgmt|toggle|{plan_id}")],
+            [InlineKeyboardButton(text=archive_text, callback_data=f"plan_mgmt|archive|{plan_id}")],
+            [InlineKeyboardButton(text="🗑 حذف کامل", callback_data=f"plan_mgmt|delete|{plan_id}")],
+            [InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"plan_mgmt|list|{list_target}")],
+        ]
+    )
+
+
+def build_plan_caption(plan: dict) -> str:
+    return (
+        f"📦 پلن #{plan['id']}\n"
+        f"نام: {plan.get('name') or '-'}\n"
+        f"حجم: {plan.get('volume_gb') or 0} گیگ\n"
+        f"مدت: {plan.get('duration_months') or 0} ماه / {plan.get('duration_days') or 0} روز\n"
+        f"یوزر: {plan.get('max_users') or 0}\n"
+        f"قیمت: {format_price(plan.get('price') or 0)} تومان\n"
+        f"اولویت: {plan.get('order_priority') or 0}\n"
+        f"نمایش: {'فعال' if int(plan.get('visible') or 0) == 1 else 'مخفی'}\n"
+        f"آرشیو: {'بله' if int(plan.get('is_archived') or 0) == 1 else 'خیر'}\n"
+        f"گروه: {plan.get('group_name') or '-'}\n"
+        f"لوکیشن: {plan.get('location') or '-'}\n"
+        f"نامحدود: {'بله' if int(plan.get('is_unlimited') or 0) == 1 else 'خیر'}"
+    )
+
+
+async def show_plans_list(target: Union[Message, CallbackQuery], include_archived: bool = False):
+    text = "📦 پلن‌های آرشیوشده:" if include_archived else "📦 پلن‌های فعال:"
+    keyboard = plans_list_keyboard(include_archived=include_archived)
+    if isinstance(target, Message):
+        await target.answer(text, reply_markup=keyboard)
+    else:
+        await target.message.answer(text, reply_markup=keyboard)
+        await target.answer()
+
+
 @router.message(F.text == "📦 مدیریت پلن‌ها")
-async def manage_plans_entry(msg: Message):
-    if not is_admin(msg.from_user.id):
-        return await msg.reply("دسترسی نداری 😅")
-    await show_plans_list_message(msg)
+async def manage_plans_entry(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await state.clear()
+    await show_plans_list(message, include_archived=False)
 
 
 @router.callback_query(F.data == "manage_plans")
-async def manage_plans_callback(cb: CallbackQuery, state: FSMContext):
-    if not is_admin(cb.from_user.id):
-        return await cb.answer("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒØ¯.", show_alert=True)
+async def manage_plans_callback(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("دسترسی نداری.", show_alert=True)
     await state.clear()
-    await show_plans_list_callback(cb)
+    await show_plans_list(callback, include_archived=False)
 
 
-
-async def show_plans_list_message(msg: Message):
-    plans = get_all_plans()
-    keyboard_rows = []
-    for p in plans:
-        pid, name, vol, m, d, maxu, price, prio, vis, loc, unlim, gname = p
-        desc = f"{'✅' if vis else '🚫'} {name} | {price} تومان"
-        keyboard_rows.append([InlineKeyboardButton(text=desc, callback_data=f"plan_select_{pid}")])
-    keyboard_rows.append([InlineKeyboardButton(text="➕ افزودن پلن جدید", callback_data="plan_add")])
-    keyboard_rows.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data="plan_back_main")])
-    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
-    await msg.answer("لیست پلن‌ها:", reply_markup=keyboard)
-
-async def show_plans_list_callback(cb: CallbackQuery):
-    if not is_admin(cb.from_user.id):
-        return await cb.answer("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒØ¯.", show_alert=True)
-    await show_plans_list_message(cb.message)
-    await cb.answer()
-
-
-# --- بازگشت ---
-@router.callback_query(F.data == "plan_back_main")
-async def plan_back_main(cb: CallbackQuery, state: FSMContext):
-    if not is_admin(cb.from_user.id):
-        return await cb.answer("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒØ¯.", show_alert=True)
+@router.callback_query(F.data == "plan_mgmt|main")
+async def plan_back_main(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("دسترسی نداری.", show_alert=True)
     await state.clear()
-    await cb.message.answer("بازگشت به منوی اصلی.", reply_markup=admin_main_menu_keyboard())
-    await cb.answer()
+    await callback.message.answer("بازگشت به منوی ادمین.", reply_markup=admin_main_menu_keyboard())
+    await callback.answer()
 
 
-# --- افزودن پلن ---
-@router.callback_query(F.data == "plan_add")
-async def plan_add_start(cb: CallbackQuery, state: FSMContext):
-    if not is_admin(cb.from_user.id):
-        return await cb.answer("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒØ¯.", show_alert=True)
-    await state.update_data(plan_action="add")
-    await cb.message.answer(
-        "فرمت:\n"
-        "نام | حجمGB | ماه | روز | تعداد یوزر | قیمت | (اختیاری)اولویت\n\n"
-        "مثال:\n۳۰ روزه | 40 | 1 | 30 | 1 | 100000 | 1"
-    )
+@router.callback_query(F.data.startswith("plan_mgmt|list|"))
+async def plan_list_callback(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("دسترسی نداری.", show_alert=True)
+    await state.clear()
+    include_archived = callback.data.endswith("|archived")
+    await show_plans_list(callback, include_archived=include_archived)
+
+
+@router.callback_query(F.data == "plan_mgmt|add")
+async def plan_add_start(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("دسترسی نداری.", show_alert=True)
     await state.set_state(PlanStates.waiting_for_add)
-    await cb.answer()
+    await callback.message.answer(
+        "فرمت افزودن پلن:\n"
+        "نام | حجم گیگ | ماه | روز | تعداد یوزر | قیمت | اولویت اختیاری\n\n"
+        "مثال:\n"
+        "۳۰ روزه | 40 | 1 | 30 | 1 | 100000 | 0"
+    )
+    await callback.answer()
+
 
 @router.message(PlanStates.waiting_for_add)
-async def plan_add_receive(msg: Message, state: FSMContext):
-    if not is_admin(msg.from_user.id):
+async def plan_add_receive(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
         await state.clear()
-        return await msg.reply("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒ ðŸ˜…")
-    data = [d.strip() for d in msg.text.split("|")]
-    if len(data) < 6:
-        return await msg.answer("فرمت نادرست — حداقل نام، حجم، ماه، روز، یوزر، قیمت لازم است.")
-    name, vol, m, d, maxu, price = data[:6]
-    prio = int(data[6]) if len(data) >= 7 and data[6].isdigit() else 0
-    add_plan_to_db(name, int(vol), int(m), int(d), int(maxu), int(price), prio, 1)
-    await msg.answer("✅ پلن اضافه شد.")
+        return
+
+    parts = [part.strip() for part in (message.text or "").split("|")]
+    if len(parts) < 6:
+        await message.answer("فرمت درست نیست. نام، حجم، ماه، روز، یوزر و قیمت لازم است.")
+        return
+
+    try:
+        add_plan_to_db(
+            name=parts[0],
+            volume_gb=int(parts[1]),
+            duration_months=int(parts[2]),
+            duration_days=int(parts[3]),
+            max_users=int(parts[4]),
+            price=int(parts[5]),
+            order_priority=int(parts[6]) if len(parts) >= 7 and parts[6] else 0,
+        )
+    except Exception:
+        await message.answer("مقادیر عددی پلن درست نیستند.")
+        return
+
     await state.clear()
+    await message.answer("✅ پلن جدید اضافه شد.", reply_markup=plans_list_keyboard(include_archived=False))
 
 
-# --- انتخاب پلن ---
-@router.callback_query(F.data.startswith("plan_select_"))
-async def plan_selected(cb: CallbackQuery, state: FSMContext):
-    if not is_admin(cb.from_user.id):
-        return await cb.answer("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒØ¯.", show_alert=True)
-    pid = int(cb.data.split("_")[2])
-    row = get_plan(pid)
-    if not row:
-        return await cb.answer("پلن پیدا نشد.", show_alert=True)
-    pid, name, vol, m, d, maxu, price, prio, vis, loc, unlim, gname = row
-    caption = (
-        f"پلن #{pid}\n"
-        f"نام: {name}\n"
-        f"حجم: {vol} GB\n"
-        f"مدت: {m} ماه {d} روز\n"
-        f"یوزر: {maxu}\n"
-        f"قیمت: {price}\n"
-        f"اولویت: {prio}\n"
-        f"وضعیت: {'نمایش' if vis else 'مخفی'}\n"
-        f"نام گروه: {gname or '-'}\n"
-        f"لوکیشن: {loc or '-'}\n"
-        f"نامحدود: {'✅' if unlim else '❌'}"
+@router.callback_query(F.data.startswith("plan_mgmt|open|"))
+async def plan_open(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("دسترسی نداری.", show_alert=True)
+    plan_id = int(callback.data.split("|")[2])
+    plan = get_plan_info(plan_id)
+    if not plan:
+        return await callback.answer("پلن پیدا نشد.", show_alert=True)
+    await state.clear()
+    await callback.message.answer(
+        build_plan_caption(plan),
+        reply_markup=plan_detail_keyboard(plan_id, archived=bool(plan.get("is_archived"))),
     )
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✏️ نام", callback_data=f"plan_edit_name_{pid}")],
-        [InlineKeyboardButton(text="📦 حجم", callback_data=f"plan_edit_volume_gb_{pid}")],
-        [InlineKeyboardButton(text="🗓 ماه", callback_data=f"plan_edit_duration_months_{pid}")],
-        [InlineKeyboardButton(text="📅 روز", callback_data=f"plan_edit_duration_days_{pid}")],
-        [InlineKeyboardButton(text="👥 یوزرها", callback_data=f"plan_edit_max_users_{pid}")],
-        [InlineKeyboardButton(text="💰 قیمت", callback_data=f"plan_edit_price_{pid}")],
-        [InlineKeyboardButton(text="🔢 اولویت", callback_data=f"plan_edit_order_priority_{pid}")],
-        [InlineKeyboardButton(text="✅/🚫 نمایش/مخفی", callback_data=f"plan_toggle_{pid}")],
-        [InlineKeyboardButton(text="❌ حذف پلن", callback_data=f"plan_delete_{pid}")],
-        [InlineKeyboardButton(text="🔙 بازگشت", callback_data="manage_plans")],
-    ])
-    await state.update_data(plan_id=pid)
-    await cb.message.answer(caption, reply_markup=keyboard)
-    await state.set_state(PlanStates.waiting_for_action)
-    await cb.answer()
+    await callback.answer()
 
 
-# --- toggle visible ---
-@router.callback_query(PlanStates.waiting_for_action, F.data.startswith("plan_toggle_"))
-async def plan_toggle(cb: CallbackQuery, state: FSMContext):
-    if not is_admin(cb.from_user.id):
-        return await cb.answer("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒØ¯.", show_alert=True)
-    pid = int(cb.data.split("_")[2])
-    plan = get_plan(pid)
-    new_vis = 0 if plan[8] else 1
-    update_plan_field(pid, "visible", new_vis)
-    await cb.message.answer(f"پلن #{pid} {'نمایش داده میشه' if new_vis else 'مخفی شد'}.")
+@router.callback_query(F.data.startswith("plan_mgmt|toggle|"))
+async def plan_toggle(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("دسترسی نداری.", show_alert=True)
+    plan_id = int(callback.data.split("|")[2])
+    plan = get_plan_info(plan_id)
+    if not plan:
+        return await callback.answer("پلن پیدا نشد.", show_alert=True)
+    new_visible = 0 if int(plan.get("visible") or 0) == 1 else 1
+    update_plan_field(plan_id, "visible", new_visible)
+    updated = get_plan_info(plan_id)
     await state.clear()
-    await show_plans_list_callback(cb)
+    await callback.message.answer("✅ وضعیت نمایش پلن تغییر کرد.")
+    if updated:
+        await callback.message.answer(
+            build_plan_caption(updated),
+            reply_markup=plan_detail_keyboard(plan_id, archived=bool(updated.get("is_archived"))),
+        )
+    await callback.answer()
 
 
-# --- delete ---
-@router.callback_query(PlanStates.waiting_for_action, F.data.startswith("plan_delete_"))
-async def plan_delete(cb: CallbackQuery, state: FSMContext):
-    if not is_admin(cb.from_user.id):
-        return await cb.answer("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒØ¯.", show_alert=True)
-    pid = int(cb.data.split("_")[2])
-    delete_plan_from_db(pid)
-    await cb.message.answer(f"🗑️ پلن #{pid} حذف شد.")
+@router.callback_query(F.data.startswith("plan_mgmt|archive|"))
+async def plan_archive(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("دسترسی نداری.", show_alert=True)
+    plan_id = int(callback.data.split("|")[2])
+    plan = get_plan_info(plan_id)
+    if not plan:
+        return await callback.answer("پلن پیدا نشد.", show_alert=True)
+
+    archived = not bool(plan.get("is_archived"))
+    set_plan_archived(plan_id, archived=archived)
     await state.clear()
-    await show_plans_list_callback(cb)
+    await callback.message.answer("✅ وضعیت آرشیو پلن تغییر کرد.")
+    await show_plans_list(callback.message, include_archived=archived)
+    await callback.answer()
 
 
-# --- edit field ---
-@router.callback_query(PlanStates.waiting_for_action, F.data.startswith("plan_edit_"))
-async def plan_edit_start(cb: CallbackQuery, state: FSMContext):
-    if not is_admin(cb.from_user.id):
-        return await cb.answer("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒØ¯.", show_alert=True)
-    tmp = cb.data[len("plan_edit_"):]
-    field_name, pid = tmp.rsplit("_", 1)
-    pid = int(pid)
-    field_map = {
+@router.callback_query(F.data.startswith("plan_mgmt|delete|"))
+async def plan_delete(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("دسترسی نداری.", show_alert=True)
+    plan_id = int(callback.data.split("|")[2])
+    delete_plan_from_db(plan_id)
+    await state.clear()
+    await callback.message.answer("🗑 پلن حذف شد.")
+    await show_plans_list(callback.message, include_archived=False)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("plan_mgmt|edit|"))
+async def plan_edit_start(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("دسترسی نداری.", show_alert=True)
+    _, _, field, plan_id = callback.data.split("|", 3)
+    field_labels = {
         "name": "نام",
-        "volume_gb": "حجم GB",
+        "volume_gb": "حجم",
         "duration_months": "ماه",
         "duration_days": "روز",
-        "max_users": "یوزرها",
+        "max_users": "تعداد یوزر",
         "price": "قیمت",
-        "order_priority": "اولویت"
+        "order_priority": "اولویت",
     }
-    if field_name not in field_map:
-        return await cb.answer("فیلد نامعتبر.", show_alert=True)
-    await state.update_data(edit_plan_id=pid, edit_field=field_name)
-    await cb.message.answer(f"لطفاً مقدار جدید برای {field_map[field_name]} را بفرستید:")
+    if field not in field_labels:
+        return await callback.answer("فیلد نامعتبر است.", show_alert=True)
+    await state.update_data(edit_plan_id=int(plan_id), edit_plan_field=field)
     await state.set_state(PlanStates.waiting_for_value)
-    await cb.answer()
+    await callback.message.answer(f"مقدار جدید برای «{field_labels[field]}» را بفرست:")
+    await callback.answer()
+
 
 @router.message(PlanStates.waiting_for_value)
-async def plan_receive_new_value(msg: Message, state: FSMContext):
-    if not is_admin(msg.from_user.id):
+async def plan_receive_new_value(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
         await state.clear()
-        return await msg.reply("Ø¯Ø³ØªØ±Ø³ÛŒ Ù†Ø¯Ø§Ø±ÛŒ ðŸ˜…")
+        return
+
     data = await state.get_data()
-    pid = data.get("edit_plan_id")
-    field = data.get("edit_field")
-    if not pid or not field:
-        await msg.answer("خطای وضعیت. دوباره تلاش کنید.")
-        return await state.clear()
-    value_text = msg.text.strip()
-    if field in ["volume_gb", "duration_months", "duration_days", "max_users", "price", "order_priority"]:
+    plan_id = data.get("edit_plan_id")
+    field = data.get("edit_plan_field")
+    if not plan_id or not field:
+        await state.clear()
+        await message.answer("خطای وضعیت. دوباره تلاش کن.")
+        return
+
+    value_text = (message.text or "").strip()
+    value = value_text
+    if field in {"volume_gb", "duration_months", "duration_days", "max_users", "price", "order_priority"}:
         try:
             value = int(value_text)
-        except:
-            return await msg.answer("این فیلد باید عدد باشد.")
-    else:
-        value = value_text
-    if update_plan_field(pid, field, value):
-        await msg.answer("✅ بروزرسانی شد.")
-    else:
-        await msg.answer("❌ خطا در بروزرسانی.")
+        except Exception:
+            await message.answer("این فیلد باید عدد باشد.")
+            return
+
+    ok = update_plan_field(int(plan_id), field, value)
     await state.clear()
-    await show_plans_list_message(msg)
+    if ok:
+        await message.answer("✅ پلن بروزرسانی شد.", reply_markup=plans_list_keyboard(include_archived=False))
+    else:
+        await message.answer("❌ بروزرسانی پلن انجام نشد.", reply_markup=plans_list_keyboard(include_archived=False))

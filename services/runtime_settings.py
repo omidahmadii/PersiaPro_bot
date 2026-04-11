@@ -5,6 +5,19 @@ from typing import Any, Optional
 
 from config import DB_PATH
 
+ACCESS_MODE_LABELS = {
+    "all": "همه کاربران",
+    "funded_only": "فقط کاربران با موجودی کافی",
+}
+
+USAGE_LIMIT_SPEED_LABELS = {
+    "32k": "32 کیلوبیت",
+    "64k": "64 کیلوبیت",
+    "128k": "128 کیلوبیت",
+    "256k": "256 کیلوبیت",
+    "512k": "512 کیلوبیت",
+}
+
 
 SETTING_DEFINITIONS: dict[str, dict[str, Any]] = {
     "feature_buy_enabled": {
@@ -16,16 +29,29 @@ SETTING_DEFINITIONS: dict[str, dict[str, Any]] = {
         "type": "choice",
         "default": "funded_only",
         "label": "دسترسی خرید",
+        "choices": ACCESS_MODE_LABELS,
     },
     "feature_renew_enabled": {
         "type": "bool",
         "default": "0",
         "label": "تمدید سرویس",
     },
+    "feature_extra_volume_enabled": {
+        "type": "bool",
+        "default": "1",
+        "label": "خرید حجم اضافه",
+    },
     "feature_renew_access_mode": {
         "type": "choice",
         "default": "funded_only",
         "label": "دسترسی تمدید",
+        "choices": ACCESS_MODE_LABELS,
+    },
+    "usage_limit_speed": {
+        "type": "choice",
+        "default": "64k",
+        "label": "سرعت محدودسازی حجم",
+        "choices": USAGE_LIMIT_SPEED_LABELS,
     },
     "message_welcome_text": {
         "type": "text",
@@ -75,11 +101,17 @@ SETTING_DEFINITIONS: dict[str, dict[str, Any]] = {
         "default": "⚠️ هیچ سرویسی برای تمدید پیدا نشد.",
         "label": "پیام نبود سرویس تمدید",
     },
+    "message_extra_volume_disabled": {
+        "type": "text",
+        "default": "در حال حاضر خرید حجم اضافه غیر فعال می باشد.",
+        "label": "پیام توقف خرید حجم اضافه",
+    },
 }
 
 FEATURE_SETTING_KEYS = (
     "feature_buy_enabled",
     "feature_renew_enabled",
+    "feature_extra_volume_enabled",
 )
 
 ACCESS_MODE_SETTING_KEYS = (
@@ -87,10 +119,9 @@ ACCESS_MODE_SETTING_KEYS = (
     "feature_renew_access_mode",
 )
 
-ACCESS_MODE_LABELS = {
-    "all": "همه کاربران",
-    "funded_only": "فقط کاربران با موجودی کافی",
-}
+CHOICE_SETTING_KEYS = ACCESS_MODE_SETTING_KEYS + (
+    "usage_limit_speed",
+)
 
 TEXT_SETTING_KEYS = (
     "message_welcome_text",
@@ -100,6 +131,7 @@ TEXT_SETTING_KEYS = (
     "message_buy_no_active_plans",
     "message_renew_disabled",
     "message_renew_no_services",
+    "message_extra_volume_disabled",
 )
 
 
@@ -123,6 +155,26 @@ def initialize_runtime_settings_schema(cursor: sqlite3.Cursor) -> None:
             """,
             (key, str(definition["default"]), str(definition["type"])),
         )
+        if str(definition.get("type")) == "choice":
+            allowed_values = {str(option) for option in dict(definition.get("choices") or {}).keys()}
+            if not allowed_values:
+                continue
+
+            row = cursor.execute(
+                "SELECT value FROM app_settings WHERE key = ?",
+                (key,),
+            ).fetchone()
+            current_value = str(row[0]) if row and row[0] is not None else None
+            default_value = str(definition["default"])
+            if current_value not in allowed_values:
+                cursor.execute(
+                    """
+                    UPDATE app_settings
+                    SET value = ?, value_type = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE key = ?
+                    """,
+                    (default_value, "choice", key),
+                )
 
 
 def _connect() -> sqlite3.Connection:
@@ -169,20 +221,63 @@ def get_bool_setting(key: str, default: bool = False) -> bool:
     return _is_truthy(raw)
 
 
+def get_choice_options(key: str) -> dict[str, str]:
+    definition = get_setting_definition(key)
+    choices = definition.get("choices")
+    return dict(choices) if isinstance(choices, dict) else {}
+
+
+def normalize_choice_value(key: str, value: Optional[str], fallback: Optional[str] = None) -> Optional[str]:
+    options = get_choice_options(key)
+    if not options:
+        return value if value is not None else fallback
+
+    resolved_fallback = fallback or get_default_setting_value(key)
+    if resolved_fallback not in options:
+        resolved_fallback = next(iter(options))
+
+    if value in options:
+        return str(value)
+    return resolved_fallback
+
+
+def get_choice_setting(key: str, default: Optional[str] = None) -> Optional[str]:
+    fallback = default or get_default_setting_value(key)
+    raw = get_setting(key, fallback)
+    return normalize_choice_value(key, raw, fallback)
+
+
+def get_choice_label(key: str, value: Optional[str]) -> str:
+    options = get_choice_options(key)
+    if value in options:
+        return str(options[str(value)])
+    return str(value or "-")
+
+
 def get_access_mode_setting(key: str, default: str = "funded_only") -> str:
-    raw = get_setting(key, default)
-    if raw in ACCESS_MODE_LABELS:
-        return str(raw)
-    return default
+    return str(get_choice_setting(key, default) or default)
 
 
 def get_access_mode_label(mode: str) -> str:
     return ACCESS_MODE_LABELS.get(mode, ACCESS_MODE_LABELS["funded_only"])
 
 
+def get_usage_limit_speed_setting(default: str = "64k") -> str:
+    return str(get_choice_setting("usage_limit_speed", default) or default)
+
+
+def get_usage_limit_speed_label(value: Optional[str] = None) -> str:
+    resolved = value or get_usage_limit_speed_setting()
+    return get_choice_label("usage_limit_speed", resolved)
+
+
 def set_setting(key: str, value: str, value_type: Optional[str] = None) -> None:
     definition = get_setting_definition(key)
     resolved_type = value_type or str(definition.get("type", "text"))
+    resolved_value = value
+
+    if resolved_type == "choice":
+        resolved_value = str(normalize_choice_value(key, value, get_default_setting_value(key, value)) or value)
 
     with _connect() as conn:
         cursor = conn.cursor()
@@ -192,7 +287,7 @@ def set_setting(key: str, value: str, value_type: Optional[str] = None) -> None:
             SET value = ?, value_type = ?, updated_at = CURRENT_TIMESTAMP
             WHERE key = ?
             """,
-            (value, resolved_type, key),
+            (resolved_value, resolved_type, key),
         )
 
         if cursor.rowcount == 0:
@@ -201,7 +296,7 @@ def set_setting(key: str, value: str, value_type: Optional[str] = None) -> None:
                 INSERT OR IGNORE INTO app_settings (key, value, value_type, updated_at)
                 VALUES (?, ?, ?, CURRENT_TIMESTAMP)
                 """,
-                (key, value, resolved_type),
+                (key, resolved_value, resolved_type),
             )
             cursor.execute(
                 """
@@ -209,7 +304,7 @@ def set_setting(key: str, value: str, value_type: Optional[str] = None) -> None:
                 SET value = ?, value_type = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE key = ?
                 """,
-                (value, resolved_type, key),
+                (resolved_value, resolved_type, key),
             )
 
         conn.commit()
