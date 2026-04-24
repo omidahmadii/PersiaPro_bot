@@ -2,9 +2,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import jdatetime
-import requests
 
-from config import BOT_TOKEN
 from services.db import (
     get_waiting_for_payment_orders,
     update_order_status,
@@ -12,6 +10,7 @@ from services.db import (
     release_account_by_username,
     get_plan_name,
 )
+from services.scheduler_services.telegram_safe import send_scheduler_notification
 
 PENDING_PAYMENT_TIMEOUT = timedelta(hours=24)
 
@@ -61,15 +60,7 @@ def _is_order_expired(order: dict) -> bool:
 
 
 def _send_notification(user_id: int, text: str) -> None:
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    data = {
-        "chat_id": user_id,
-        "text": text,
-        "parse_mode": "HTML",
-    }
-    response = requests.post(url, data=data, timeout=15)
-    if not response.ok:
-        raise Exception(f"Telegram API error: {response.text}")
+    send_scheduler_notification(chat_id=user_id, text=text, parse_mode="HTML", timeout=15)
 
 
 def _notify_user_pending_purchase_canceled(order: dict) -> None:
@@ -79,10 +70,7 @@ def _notify_user_pending_purchase_canceled(order: dict) -> None:
         f"به دلیل عدم پرداخت در 24 ساعت گذشته لغو شد.\n\n"
         f"اکانت رزروشده دوباره آزاد شد و در صورت نیاز می‌توانید دوباره خرید را ثبت کنید."
     )
-    try:
-        _send_notification(order["user_id"], text)
-    except Exception as e:
-        print(f"[!] failed to notify canceled purchase order_id={order['id']}: {e}")
+    _send_notification(order["user_id"], text)
 
 
 def _notify_user_pending_renewal_canceled(order: dict) -> None:
@@ -92,7 +80,4 @@ def _notify_user_pending_renewal_canceled(order: dict) -> None:
         f"و پلن {plan_name} به دلیل عدم پرداخت در 24 ساعت گذشته لغو شد.\n\n"
         f"در صورت نیاز می‌توانید دوباره از بخش تمدید سرویس اقدام کنید."
     )
-    try:
-        _send_notification(order["user_id"], text)
-    except Exception as e:
-        print(f"[!] failed to notify canceled renewal order_id={order['id']}: {e}")
+    _send_notification(order["user_id"], text)

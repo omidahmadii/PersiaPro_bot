@@ -5,11 +5,16 @@ from aiogram.types import Message
 from config import ADMINS
 from keyboards.main_menu import user_main_menu_keyboard, admin_main_menu_keyboard
 from services.db import get_active_cards, update_last_name
+from services.payment_workflow import format_card_number_for_display
 
 router = Router()
 
 
-@router.message(F.text == "💳 شماره کارت")
+def ltr_card_text(card_number: str) -> str:
+    return format_card_number_for_display(card_number)
+
+
+@router.message(F.text.in_({"💳 شماره کارت", "شماره کارت"}))
 async def show_cards(message: Message):
     user_id = message.from_user.id
     last_name = message.from_user.last_name
@@ -35,7 +40,7 @@ async def show_cards(message: Message):
             text += (
                 f"🏦 {card['bank_name']} "
                 f"به نام {card['owner_name']}\n"
-                f"<code>\u200F{card['card_number']}</code>\n\n"
+                f"<code>{ltr_card_text(card['card_number'])}</code>\n\n"
             )
 
         # ادامه متن ثابت

@@ -2,9 +2,7 @@ import datetime
 from typing import Optional, Union
 
 import jdatetime
-import requests
 
-from config import BOT_TOKEN
 from services import IBSng
 from services.IBSng import change_group
 from services.db import (
@@ -17,6 +15,8 @@ from services.db import (
     get_plan_name,
     get_account_credentials_by_username,
 )
+from services.scheduler_services.telegram_safe import send_scheduler_notification
+from services.usage_policy import get_volume_policy_alert
 
 
 def activate_waiting_for_payment_orders() -> None:
@@ -84,15 +84,7 @@ def format_price(amount: Union[int, float]) -> str:
 
 
 def _send_notification(user_id: int, msg: str) -> None:
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    data = {
-        "chat_id": user_id,
-        "text": msg,
-        "parse_mode": "HTML",
-    }
-    response = requests.post(url, data=data, timeout=15)
-    if not response.ok:
-        raise Exception(f"Telegram API error: {response.text}")
+    send_scheduler_notification(chat_id=user_id, text=msg, parse_mode="HTML", timeout=15)
 
 
 def _notify_user_purchase_activated(order: dict, new_balance: int) -> None:
@@ -111,7 +103,7 @@ def _notify_user_purchase_activated(order: dict, new_balance: int) -> None:
         lines.append(f"🔐 رمز عبور: <code>{password}</code>")
     lines.extend([
         f"💰 موجودی: {format_price(new_balance)} تومان",
-        "⚠️ پس از اتمام حجم این سرویس، اتصال آن قطع می‌شود.",
+        get_volume_policy_alert(),
     ])
     _send_notification(order["user_id"], "\n".join(lines))
 
@@ -124,7 +116,7 @@ def _notify_user_renewal_activated(order: dict, new_balance: int) -> None:
         f"🔸 پلن: {plan_name}\n"
         f"👤 نام کاربری: <code>{username}</code>\n"
         f"💰 موجودی: {format_price(new_balance)} تومان\n"
-        f"⚠️ پس از اتمام حجم این سرویس، اتصال آن قطع می‌شود."
+        f"{get_volume_policy_alert()}"
     )
     _send_notification(order["user_id"], msg)
 
@@ -134,10 +126,11 @@ def _notify_user_renewal_reserved(order: dict, new_balance: int) -> None:
     username = order["username"]
     msg = (
         f"✅ پرداخت شما با موفقیت ثبت شد.\n"
-        f"سرویس شما پس از پایان دوره‌ی فعلی به‌صورت خودکار فعال می‌گردد.\n\n"
+        f"سرویس شما پس از پایان دوره‌ی فعلی به‌صورت خودکار فعال می‌گردد.\n"
+        f"برای فعال‌سازی سرویس جدید پیش از موعد، از منوی ربات گزینه «🚀 فعال‌سازی سرویس ذخیره» را بزنید.\n\n"
         f"🔸 پلن: {plan_name}\n"
         f"👤 نام کاربری: <code>{username}</code>\n"
         f"💰 موجودی: {format_price(new_balance)} تومان\n"
-        f"⚠️ پس از اتمام حجم این سرویس، اتصال آن قطع می‌شود."
+        f"{get_volume_policy_alert()}"
     )
     _send_notification(order["user_id"], msg)

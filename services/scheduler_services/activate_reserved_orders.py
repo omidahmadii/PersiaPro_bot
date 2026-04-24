@@ -2,9 +2,7 @@ import datetime
 from typing import Optional
 
 import jdatetime
-import requests
 
-from config import BOT_TOKEN  # فرض بر این که توکن در config موجود است
 from services import IBSng
 from services.IBSng import change_group
 from services.db import (
@@ -13,6 +11,8 @@ from services.db import (
     update_order_status,
     get_order_plan_duration, get_order_plan_group_name,
 )
+from services.scheduler_services.telegram_safe import send_scheduler_notification
+from services.usage_policy import get_volume_policy_alert
 
 
 # ----------------------------------------------------------------------------
@@ -90,17 +90,13 @@ def _notify_user_activation(reserved_order: dict, duration_months: int) -> None:
     msg = (
         f"✅ دوست عزیز،\n"
         f"سرویس رزرو شما با نام کاربری <code>{username}</code> با موفقیت فعال شد.\n"
-        f"⚠️ پس از اتمام حجم این سرویس، اتصال آن قطع می‌شود.\n\n"
+        f"{get_volume_policy_alert()}\n\n"
         f"✨ در صورت بروز هرگونه مشکل با پشتیبانی در تماس باشید."
     )
 
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    data = {
-        "chat_id": reserved_order["user_id"],
-        "text": msg,
-        "parse_mode": "HTML"
-    }
-
-    response = requests.post(url, data=data)
-    if not response.ok:
-        raise Exception(f"Telegram API error: {response.text}")
+    send_scheduler_notification(
+        chat_id=reserved_order["user_id"],
+        text=msg,
+        parse_mode="HTML",
+        timeout=15,
+    )

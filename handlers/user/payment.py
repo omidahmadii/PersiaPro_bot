@@ -14,6 +14,8 @@ from services.db import add_user, ensure_user_exists, update_last_name
 from services.payment_workflow import (
     STATUS_DRAFT,
     create_transaction_draft,
+    duplicate_reason_label,
+    format_card_number_for_display,
     get_active_bank_cards,
     get_duplicate_candidates,
     get_transaction,
@@ -28,23 +30,15 @@ from services.payment_workflow import (
     set_transfer_time,
     submit_transaction_for_review,
 )
+from services.runtime_settings import get_payment_common_amounts
 
 router = Router()
 
 MIN_TOPUP = 1_000
 MAX_TOPUP = 50_000_000
-COMMON_AMOUNTS = [
-    200_000,
-    400_000,
-    500_000,
-    600_000,
-    1_000_000,
-    1_500_000,
-]
 
 
 class PaymentStates(StatesGroup):
-    waiting_for_receipt = State()
     choosing_amount = State()
     typing_amount = State()
     choosing_destination_card = State()
@@ -76,11 +70,11 @@ def format_price(amount: int) -> str:
 
 
 def mask_card_number(card_number: Optional[str]) -> str:
-    digits = normalize_card_number(card_number)
-    if len(digits) < 8:
-        return digits or "نامشخص"
-    groups = [digits[i:i + 4] for i in range(0, len(digits), 4)]
-    return "-".join(groups)
+    return format_card_number_for_display(card_number)
+
+
+def ltr_card_text(card_number: Optional[str]) -> str:
+    return format_card_number_for_display(card_number)
 
 
 def optional_keyboard(skip_text: str) -> InlineKeyboardMarkup:
@@ -102,8 +96,9 @@ def cancel_only_keyboard() -> InlineKeyboardMarkup:
 
 def amount_keyboard() -> InlineKeyboardMarkup:
     rows = []
-    for index in range(0, len(COMMON_AMOUNTS), 2):
-        chunk = COMMON_AMOUNTS[index:index + 2]
+    common_amounts = get_payment_common_amounts()
+    for index in range(0, len(common_amounts), 2):
+        chunk = common_amounts[index:index + 2]
         rows.append(
             [
                 InlineKeyboardButton(
@@ -121,7 +116,7 @@ def amount_keyboard() -> InlineKeyboardMarkup:
 def destination_card_keyboard() -> InlineKeyboardMarkup:
     rows = []
     for card in get_active_bank_cards():
-        label = f"{mask_card_number(card['card_number'])} | {card.get('bank_name') or '-'}"
+        label = f"{ltr_card_text(card['card_number'])} | {card.get('bank_name') or '-'}"
         rows.append(
             [
                 InlineKeyboardButton(
@@ -217,17 +212,12 @@ def _selected_relative_date(choice: str) -> Optional[str]:
 
 
 def _format_duplicate_flags(flags: Optional[str]) -> str:
-    mapping = {
-        "same_photo": "عکس مشابه",
-        "same_amount_card_datetime": "مبلغ/کارت/تاریخ‌وساعت مشابه",
-        "same_amount_date_source_last4": "مبلغ/تاریخ/۴ رقم کارت مبدا مشابه",
-    }
     items = []
     for raw in (flags or "").split(","):
         key = raw.strip()
         if not key:
             continue
-        items.append(mapping.get(key, key))
+        items.append(duplicate_reason_label(key))
     return "، ".join(items)
 
 
@@ -239,20 +229,20 @@ def build_cards_text() -> str:
     lines = ["💳 برای شارژ حساب، مبلغ را به یکی از کارت‌های زیر واریز کنید:", ""]
     for card in active_cards:
         lines.append(f"🏦 {card.get('bank_name') or '-'} به نام {card.get('owner_name') or '-'}")
-        lines.append(f"<code>{mask_card_number(card.get('card_number'))}</code>")
+        lines.append(f"<code>{ltr_card_text(card.get('card_number'))}</code>")
         lines.append("")
-    lines.append("📸 بعد از واریز، عکس فیش را بفرست تا ثبت اطلاعات را شروع کنیم.")
+    lines.append("📸 بعد از واریز، کافی است تصویر فیش را همین‌جا بفرستید تا ثبت پرداخت شروع شود.")
     return "\n".join(lines)
 
 
 def build_payment_summary(txn: dict) -> str:
-    destination_card = mask_card_number(txn.get("destination_card_number"))
+    destination_card = ltr_card_text(txn.get("destination_card_number"))
     destination_bank = txn.get("destination_bank_name") or "کارت خارج از لیست"
     source_last4 = txn.get("source_card_last4") or "وارد نشده"
     return (
         "🧾 <b>خلاصه ثبت فیش</b>\n\n"
         f"💰 مبلغ: <b>{format_price(txn.get('amount_claimed') or 0)} تومان</b>\n"
-        f"🏦 کارت مقصد: <b>{destination_card}</b>\n"
+        f"🏦 کارت مقصد: <code>{destination_card}</code>\n"
         f"🏷 بانک/عنوان کارت: <b>{destination_bank}</b>\n"
         f"📅 تاریخ واریز: <b>{txn.get('transfer_date') or '-'}</b>\n"
         f"🕒 ساعت واریز: <b>{txn.get('transfer_time') or '-'}</b>\n"
@@ -263,7 +253,7 @@ def build_payment_summary(txn: dict) -> str:
 def build_admin_submission_caption(txn: dict) -> str:
     name_parts = [txn.get("first_name") or "", txn.get("last_name") or ""]
     full_name = " ".join(part for part in name_parts if part).strip() or "-"
-    destination_card = mask_card_number(txn.get("destination_card_number"))
+    destination_card = ltr_card_text(txn.get("destination_card_number"))
     destination_bank = txn.get("destination_bank_name") or "کارت خارج از لیست"
     duplicate_note = ""
     if int(txn.get("is_duplicate_suspect") or 0) == 1:
@@ -272,7 +262,7 @@ def build_admin_submission_caption(txn: dict) -> str:
         f"📥 تراکنش جدید #{txn['id']}\n"
         f"👤 کاربر: <a href='tg://user?id={txn['user_id']}'>{txn['user_id']} {full_name}</a>\n"
         f"💰 مبلغ اعلامی: {format_price(txn.get('amount_claimed') or 0)} تومان\n"
-        f"🏦 کارت مقصد: {destination_card} | {destination_bank}\n"
+        f"🏦 کارت مقصد: <code>{destination_card}</code> | {destination_bank}\n"
         f"📅 زمان واریز: {txn.get('transfer_date') or '-'} {txn.get('transfer_time') or '-'}\n"
         f"💳 ۴ رقم آخر کارت مبدا: {txn.get('source_card_last4') or 'ندارد'}\n"
         f"{duplicate_note}"
@@ -399,27 +389,15 @@ async def prompt_confirmation(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(F.text.in_({"💳 شارژ حساب", "💳 شماره کارت", "💳 دریافت شماره کارت"}))
+@router.message(F.text.in_({"💳 شارژ حساب", "💳 شماره کارت", "💳 دریافت شماره کارت", "شماره کارت"}))
 async def start_topup_flow(message: Message, state: FSMContext):
     ensure_user_record(message)
     await state.clear()
-    await state.set_state(PaymentStates.waiting_for_receipt)
     await message.answer(
         build_cards_text(),
         parse_mode="HTML",
         reply_markup=main_menu_keyboard_for_user(message.from_user.id),
     )
-
-
-@router.message(PaymentStates.waiting_for_receipt)
-async def waiting_for_receipt_message(message: Message, state: FSMContext, bot: Bot):
-    if message.photo:
-        handled = await register_receipt_upload(message, state, bot)
-        if handled:
-            return
-
-    await message.answer("📸 لطفاً عکس فیش را بفرست تا ثبت اطلاعات را ادامه بدهیم.")
-
 
 @router.message(F.photo)
 async def catch_any_photo_as_receipt(message: Message, state: FSMContext, bot: Bot):
@@ -684,4 +662,3 @@ async def cancel_payment_flow(callback: CallbackQuery, state: FSMContext):
         reply_markup=main_menu_keyboard_for_user(callback.from_user.id),
     )
     await callback.answer("لغو شد.")
-

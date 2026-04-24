@@ -35,14 +35,20 @@ from services.db import (
     get_order_data,
 )
 from services.runtime_settings import get_access_mode_setting, get_bool_setting, get_text_setting
+from services.payment_workflow import format_card_number_for_display
+from services.usage_policy import get_volume_policy_alert, get_volume_policy_text
 
 router = Router()
 
 DEFAULT_MEMBERSHIP_REQUIRED_TEXT = "🔒 برای استفاده از این بخش باید عضو کانال PersiaPro باشید."
 DEFAULT_RENEW_DISABLED_TEXT = "در حال حاضر تمدید سرویس غیر فعال می باشد."
 DEFAULT_RENEW_NO_SERVICES_TEXT = "⚠️ هیچ سرویسی برای تمدید پیدا نشد."
-VOLUME_POLICY_TEXT = "ℹ️ پس از اتمام حجم سرویس، اتصال آن قطع می‌شود."
-VOLUME_POLICY_ALERT = "⚠️ پس از اتمام حجم این سرویس، اتصال آن قطع می‌شود."
+def volume_policy_text() -> str:
+    return get_volume_policy_text()
+
+
+def volume_policy_alert() -> str:
+    return get_volume_policy_alert()
 
 
 def is_renew_enabled() -> bool:
@@ -69,22 +75,57 @@ def get_renew_no_services_text() -> str:
     return get_text_setting("message_renew_no_services", DEFAULT_RENEW_NO_SERVICES_TEXT)
 
 
+def get_pending_renewal_services(services: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [service for service in services if service.get("status") == "waiting_for_renewal_not_paid"]
+
+
+def build_renew_access_blocked_text(current_balance: int, min_price: int) -> str:
+    _ = current_balance, min_price
+    return "در حال حاضر امکان تمدید سرویس فعال نیست."
+
+
+def get_renew_access_block_message(user_id: int) -> Optional[str]:
+    if not is_renew_enabled():
+        return get_renew_disabled_text()
+
+    renew_plans = get_renew_plans(user_id=user_id)
+    active_plans = [plan for plan in renew_plans if _is_active(plan)]
+    if not active_plans:
+        return None
+
+    if not is_renew_funded_only_mode():
+        return None
+
+    services = get_services_for_renew(user_id)
+    if get_pending_renewal_services(services):
+        return None
+
+    current_balance = int(get_user_balance(user_id) or 0)
+    min_price = get_min_active_plan_price(active_plans)
+    if current_balance >= min_price:
+        return None
+
+    return build_renew_access_blocked_text(current_balance, min_price)
+
+
 async def ensure_renew_enabled_message(message: Message, state: FSMContext) -> bool:
-    if is_renew_enabled():
+    blocked_text = get_renew_access_block_message(message.from_user.id)
+    if blocked_text is None:
         return True
 
     await state.clear()
-    await message.answer(get_renew_disabled_text(), reply_markup=main_menu_keyboard_for_user(message.from_user.id))
+    await message.answer(blocked_text, reply_markup=main_menu_keyboard_for_user(message.from_user.id))
     return False
 
 
 async def ensure_renew_enabled_callback(callback: CallbackQuery, state: FSMContext) -> bool:
-    if is_renew_enabled():
+    blocked_text = get_renew_access_block_message(callback.from_user.id)
+    if blocked_text is None:
         return True
 
     await state.clear()
     await callback.message.answer(
-        get_renew_disabled_text(),
+        blocked_text,
         reply_markup=main_menu_keyboard_for_user(callback.from_user.id),
     )
     return False
@@ -180,7 +221,7 @@ def build_cards_text() -> str:
     for card in active_cards:
         parts.append(
             f"🏦 {card['bank_name']} به نام {card['owner_name']}\n"
-            f"<code>\u200F{card['card_number']}</code>"
+            f"<code>{format_card_number_for_display(card['card_number'])}</code>"
         )
     return "\n\n".join(parts)
 
@@ -463,10 +504,11 @@ async def renew_start(message: Message, state: FSMContext):
     if not await ensure_renew_enabled_message(message, state):
         return
     user_id = message.from_user.id
+    current_balance = int(get_user_balance(user_id) or 0)
     renew_plans = get_renew_plans(user_id=user_id)
     active_plans = [p for p in renew_plans if _is_active(p)]
     services = get_services_for_renew(user_id)
-    pending_services = [s for s in services if s.get("status") == "waiting_for_renewal_not_paid"]
+    pending_services = get_pending_renewal_services(services)
 
     last_name = message.from_user.last_name
     if last_name:
@@ -482,12 +524,25 @@ async def renew_start(message: Message, state: FSMContext):
     if not services:
         return await message.answer(get_renew_no_services_text(), reply_markup=main_menu_keyboard_for_user(user_id))
 
+    restricted_to_pending = (
+        is_renew_funded_only_mode()
+        and bool(pending_services)
+        and current_balance < get_min_active_plan_price(active_plans)
+    )
+    services_to_show = pending_services if restricted_to_pending else services
+    prompt_text = (
+        "در حال حاضر فقط تمدیدهای در انتظار پرداختت را می‌توانی مدیریت کنی.\n"
+        "سرویسی را انتخاب کن:"
+        if restricted_to_pending
+        else "لطفاً سرویسی که می‌خواهید تمدید کنید را انتخاب کنید:"
+    )
+
     await state.clear()
-    await state.update_data(services=services)
+    await state.update_data(services=services_to_show)
     await state.set_state(RenewStates.choosing_service)
     return await message.answer(
-        "لطفاً سرویسی که می‌خواهید تمدید کنید را انتخاب کنید:",
-        reply_markup=kb_services_inline(services)
+        prompt_text,
+        reply_markup=kb_services_inline(services_to_show)
     )
 
 
@@ -548,7 +603,7 @@ async def renew_choose_service(callback: CallbackQuery, state: FSMContext):
     await state.set_state(RenewStates.choosing_plan)
     text = (
         "لطفاً پلن تمدید را انتخاب کنید:\n"
-        f"{VOLUME_POLICY_TEXT}"
+        + volume_policy_text()
     )
     return await callback.message.edit_text(text, reply_markup=markup)
 
@@ -570,7 +625,7 @@ async def renew_choose_category(callback: CallbackQuery, state: FSMContext):
         await state.set_state(RenewStates.choosing_plan)
         text = (
             "لطفاً پلن تمدید را انتخاب کنید:\n"
-            f"{VOLUME_POLICY_TEXT}"
+            + volume_policy_text()
         )
         return await callback.message.edit_text(text, reply_markup=keyboard_durations(plans, prefix="renew"))
 
@@ -613,7 +668,7 @@ async def renew_choose_location(callback: CallbackQuery, state: FSMContext):
     await state.set_state(RenewStates.choosing_plan)
     text = (
         "لطفاً پلن تمدید را انتخاب کنید:\n"
-        f"{VOLUME_POLICY_TEXT}"
+        + volume_policy_text()
     )
     return await callback.message.edit_text(text,
                                             reply_markup=keyboard_durations(plans, back_to="location", prefix="renew"))
@@ -656,7 +711,7 @@ async def renew_choose_plan(callback: CallbackQuery, state: FSMContext):
         f"💰 مبلغ: {price_text} تومان",
         "",
         "ℹ️ این تمدید روی همین نام‌کاربری اعمال می‌شود و یوزرنیم/رمز جدید ساخته نمی‌شود.",
-        VOLUME_POLICY_TEXT,
+        volume_policy_text(),
         "",
         "لطفاً تایید کنید:",
     ]
@@ -777,7 +832,7 @@ async def renew_confirm_and_process(callback: CallbackQuery, state: FSMContext):
                 f"🔸 پلن: {plan_name}\n"
                 f"👤 نام کاربری: `{service_username}`\n"
                 f"💰 موجودی: {format_price(new_balance)} تومان\n"
-                f"{VOLUME_POLICY_ALERT}",
+                + volume_policy_alert(),
                 parse_mode="Markdown"
             )
             await callback.message.answer("بازگشت به منوی اصلی", reply_markup=main_menu_keyboard_for_user(callback.from_user.id))
@@ -800,8 +855,9 @@ async def renew_confirm_and_process(callback: CallbackQuery, state: FSMContext):
         await send_message_to_admins(text_admin)
 
         await callback.message.edit_text(
-            "✅ تمدید شما ثبت شد و پس از پایان دوره‌ی فعلی به‌صورت خودکار اعمال می‌شود.\n\n"
-            f"{VOLUME_POLICY_ALERT}"
+            "✅ تمدید شما ثبت شد و پس از پایان دوره‌ی فعلی به‌صورت خودکار اعمال می‌شود.\n"
+            "برای فعال‌سازی سرویس جدید پیش از موعد، از منوی ربات گزینه «🚀 فعال‌سازی سرویس ذخیره» را بزنید.\n\n"
+            + volume_policy_alert()
         )
         await callback.message.answer("بازگشت به منوی اصلی", reply_markup=main_menu_keyboard_for_user(callback.from_user.id))
         await state.clear()
@@ -878,7 +934,7 @@ async def renew_go_back(callback: CallbackQuery, state: FSMContext):
             await state.set_state(RenewStates.choosing_plan)
             text = (
                 "لطفاً پلن تمدید را انتخاب کنید:\n"
-                f"{VOLUME_POLICY_TEXT}"
+                + volume_policy_text()
             )
             return await callback.message.edit_text(text, reply_markup=markup)
 
@@ -916,7 +972,7 @@ async def renew_go_back(callback: CallbackQuery, state: FSMContext):
             await state.set_state(RenewStates.choosing_plan)
             text = (
                 "لطفاً پلن تمدید را انتخاب کنید:\n"
-                f"{VOLUME_POLICY_TEXT}"
+                + volume_policy_text()
             )
             return await callback.message.edit_text(text, reply_markup=keyboard_durations(plans, prefix="renew"))
 
@@ -929,7 +985,7 @@ async def renew_go_back(callback: CallbackQuery, state: FSMContext):
             await state.set_state(RenewStates.choosing_plan)
             text = (
                 "لطفاً پلن تمدید را انتخاب کنید:\n"
-                f"{VOLUME_POLICY_TEXT}"
+                + volume_policy_text()
             )
             return await callback.message.edit_text(text, reply_markup=keyboard_durations(plans, back_to="location",
                                                                                           prefix="renew"))
@@ -962,7 +1018,7 @@ async def renew_go_back(callback: CallbackQuery, state: FSMContext):
             await state.set_state(RenewStates.choosing_plan)
             text = (
                 "لطفاً پلن تمدید را انتخاب کنید:\n"
-                f"{VOLUME_POLICY_TEXT}"
+                + volume_policy_text()
             )
             return await callback.message.edit_text(text, reply_markup=markup)
     return

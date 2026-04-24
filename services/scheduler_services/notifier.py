@@ -1,14 +1,21 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import jdatetime
-import requests
 
-import config
-from services.db import get_orders_for_notifications, update_order_last_notif_level, get_user_message_name
+from services.db import (
+    get_orders_for_notifications,
+    get_plan_info,
+    get_user_message_name,
+    update_order_last_notif_level,
+    update_order_last_renewal_offer_notification_at,
+)
+from services.runtime_settings import get_bool_setting, get_int_setting
+from services.scheduler_services.telegram_safe import send_scheduler_notification
 
-TOKEN = config.BOT_TOKEN
 # ثابت جدید: بازهٔ سکوت
 QUIET_HOURS = range(0, 9)
+DEFAULT_RENEWAL_OFFER_DAYS_THRESHOLD = 10
+DEFAULT_RENEWAL_OFFER_TARGET_PLAN_ID = 27
 
 
 def get_current_jdatetime():
@@ -31,15 +38,23 @@ def get_notification_level(remaining_seconds):
 
 def send_notification(user_id, text):
     """ارسال پیام به کاربر در تلگرام"""
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    data = {
-        "chat_id": user_id,
-        "text": text,
-        "parse_mode": "HTML"
-    }
-    response = requests.post(url, data=data)
-    if not response.ok:
-        raise Exception(f"Telegram API error: {response.text}")
+    return send_scheduler_notification(chat_id=user_id, text=text, parse_mode="HTML", timeout=15)
+
+
+def _build_renewal_offer_message(order: dict, target_plan: dict, days_threshold: int) -> str:
+    user_message_name = get_user_message_name(order["user_id"])
+    name = user_message_name.strip() if user_message_name else ""
+    name_text = f"{name} جان" if name else "مشترک گرامی"
+
+    target_plan_name = target_plan.get("name") or f"پلن #{target_plan.get('id')}"
+
+    return (
+        f"🎉 <b>{name_text}</b>\n\n"
+        f"⏳ سرویس <b><code>{order['username']}</code></b> کمتر از {days_threshold} روز دیگر به پایان می‌رسد.\n\n"
+        f"🎯 پلن پیشنهادی برای تمدید: <b>{target_plan_name}</b>\n"
+        "🚀 این پلن با محدودیت حداقلی ارائه شده و دسترسی مناسبی به واتساپ، اینستاگرام و اکثر اپلیکیشن‌های پرکاربرد دارد.\n\n"
+        "🔄 برای مشاهده و تمدید، از منوی ربات «تمدید سرویس» را انتخاب کنید."
+    )
 
 
 def notifier():
@@ -48,7 +63,20 @@ def notifier():
     if now_jdt.hour in QUIET_HOURS:
         return  # به سادگی خروج؛ دفعهٔ بعدی چک می‌شود
 
-    threshold_time = now_jdt + timedelta(hours=48)
+    offer_enabled = get_bool_setting("renewal_offer_notification_enabled", default=False)
+    offer_days_threshold = max(get_int_setting("renewal_offer_days_threshold", DEFAULT_RENEWAL_OFFER_DAYS_THRESHOLD), 1)
+    offer_target_plan_id = max(get_int_setting("renewal_offer_target_plan_id", DEFAULT_RENEWAL_OFFER_TARGET_PLAN_ID), 0)
+    offer_target_plan = None
+    if offer_enabled and offer_target_plan_id > 0:
+        plan = get_plan_info(offer_target_plan_id)
+        if plan and int(plan.get("is_archived") or 0) == 0:
+            offer_target_plan = plan
+
+    threshold_hours = 48
+    if offer_enabled and offer_target_plan:
+        threshold_hours = max(threshold_hours, offer_days_threshold * 24)
+
+    threshold_time = now_jdt + timedelta(hours=threshold_hours)
     orders = get_orders_for_notifications(threshold_time.strftime("%Y-%m-%d %H:%M:%S"))
 
     for order in orders:
@@ -56,6 +84,21 @@ def notifier():
             expires_at_jdt = jdatetime.datetime.strptime(order['expires_at'], "%Y-%m-%d %H:%M")
             remaining_seconds = int((expires_at_jdt - now_jdt).total_seconds())
             level_needed = get_notification_level(remaining_seconds)
+
+            if (
+                offer_enabled
+                and offer_target_plan
+                and order.get("status") == "active"
+                and int(order.get("plan_id") or 0) != int(offer_target_plan_id)
+                and remaining_seconds > 0
+                and remaining_seconds <= offer_days_threshold * 24 * 3600
+                and not str(order.get("last_renewal_offer_notification_at") or "").strip()
+            ):
+                offer_text = _build_renewal_offer_message(order, offer_target_plan, offer_days_threshold)
+                sent_offer = send_notification(order["user_id"], offer_text)
+                if sent_offer:
+                    sent_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    update_order_last_renewal_offer_notification_at(sent_at, order["id"])
 
             if level_needed == 0:
                 continue  # هیچ پیامی لازم نیست
@@ -67,7 +110,9 @@ def notifier():
             last_level = order.get('last_notif_level') or 0
             if level_needed > last_level:
                 text = build_message(level_needed, order['status'], order)
-                send_notification(order['user_id'], text)
+                sent = send_notification(order['user_id'], text)
+                if not sent:
+                    continue
                 update_order_last_notif_level(level_needed, order['id'])
 
         except Exception as e:

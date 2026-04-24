@@ -7,6 +7,7 @@ from config import (
     SCHEDULER_ACTIVATE_WAITING_FOR_PAYMENT,
     SCHEDULER_AUTO_RENEW,
     SCHEDULER_CANCEL_NOT_PAID,
+    SCHEDULER_CONVERSION_NOTIFIER,
     SCHEDULER_EXPIRE_ORDERS,
     SCHEDULER_LIMIT_SPEED,
     SCHEDULER_MEMBERSHIP,
@@ -20,6 +21,7 @@ from services.scheduler_services.activate_reserved_orders import activate_reserv
 from services.scheduler_services.activate_waiting_for_payment_orders import activate_waiting_for_payment_orders
 from services.scheduler_services.cancel_not_paid_waiting_for_payment_orders import \
     cancel_not_paid_waiting_for_payment_orders
+from services.conversion_offer import send_conversion_offer_notifications
 from services.db import expire_old_orders, archive_old_orders
 from services.db import get_active_orders_without_time, update_order_starts_at, update_order_expires_at
 from services.scheduler_services.limit_speed import limit_speed
@@ -78,6 +80,15 @@ async def notifier_loop():
             await asyncio.to_thread(notifier)
         except Exception as e:
             print(f"خطا در ارسال پیغام: {e}")
+        await asyncio.sleep(15 * 60)
+
+
+async def conversion_notifier_loop():
+    while True:
+        try:
+            await asyncio.to_thread(send_conversion_offer_notifications)
+        except Exception as e:
+            print(f"Ø®Ø·Ø§ Ø¯Ø± Ø§Ø±Ø³Ø§Ù„ Ù¾ÛŒØ§Ù… Ø·Ø±Ø­ ØªØ¨Ø¯ÛŒÙ„: {e}")
         await asyncio.sleep(15 * 60)
 
 
@@ -159,6 +170,7 @@ async def scheduler():
     job_configs = [
         ("update_orders_time_from_ibs", SCHEDULER_UPDATE_ORDER_TIMES, update_orders_time_from_ibs),
         ("notifier", SCHEDULER_NOTIFIER, notifier_loop),
+        ("conversion_notifier", SCHEDULER_CONVERSION_NOTIFIER, conversion_notifier_loop),
         ("activate_reserved_orders", SCHEDULER_ACTIVATE_RESERVED, activate_reserved_orders_loop),
         ("expire_orders", SCHEDULER_EXPIRE_ORDERS, expire_orders_loop),
         ("usage_logger", SCHEDULER_USAGE_LOGGER, log_usage_loop),

@@ -53,7 +53,7 @@ def update_usages():
         ORDER BY
             CASE WHEN usage_last_update IS NULL THEN 0 ELSE 1 END,
             usage_last_update ASC
-            limit 5
+            limit 7
     """)
     orders = cur.fetchall()
 

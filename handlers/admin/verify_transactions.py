@@ -1,6 +1,6 @@
 from typing import Optional
 
-from aiogram import F, Router, Bot
+from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -12,6 +12,9 @@ from services.payment_workflow import (
     STATUS_LEGACY_PENDING,
     STATUS_PENDING_ADMIN,
     approve_transaction_initial,
+    approve_transaction_with_accounting,
+    duplicate_reason_label as payment_duplicate_reason_label,
+    format_card_number_for_display,
     get_duplicate_candidates,
     get_transaction_status_label,
     get_transaction_with_user,
@@ -24,6 +27,12 @@ router = Router()
 MIN_TOPUP = 1_000
 MAX_TOPUP = 50_000_000
 INITIAL_REVIEW_STATUSES = {STATUS_PENDING_ADMIN, STATUS_LEGACY_PENDING}
+PRESET_REJECT_REASONS = {
+    "duplicate": "فیش تکراری است.",
+    "invalid_image": "عکس ارسالی فیش واریزی نیست یا تصویر نامرتبط ارسال شده است.",
+    "insufficient_info": "اطلاعات عکس ارسالی برای بررسی کافی نیست.",
+    "sms_instead": "به‌جای فیش واریزی، عکس پیامک کسر از حساب ارسال شده است.",
+}
 
 
 class VerifyTxn(StatesGroup):
@@ -53,19 +62,11 @@ def parse_amount(text: str) -> Optional[int]:
 
 
 def mask_card(card_number: Optional[str]) -> str:
-    digits = "".join(ch for ch in str(card_number or "") if ch.isdigit())
-    if len(digits) < 8:
-        return digits or "نامشخص"
-    return "-".join(digits[i:i + 4] for i in range(0, len(digits), 4))
+    return format_card_number_for_display(card_number)
 
 
 def duplicate_reason_label(reason: str) -> str:
-    mapping = {
-        "same_photo": "عکس مشابه",
-        "same_amount_card_datetime": "مبلغ/کارت/تاریخ‌وساعت مشابه",
-        "same_amount_date_source_last4": "مبلغ/تاریخ/۴ رقم کارت مبدا مشابه",
-    }
-    return mapping.get(reason, reason)
+    return payment_duplicate_reason_label(reason)
 
 
 def pending_transactions_keyboard(transactions: list[dict]) -> InlineKeyboardMarkup:
@@ -86,11 +87,24 @@ def review_keyboard(txn_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="✅ تایید با مبلغ اعلامی", callback_data=f"verify|approve_claimed|{txn_id}")],
+            [InlineKeyboardButton(text="✅ تایید + تایید حسابداری", callback_data=f"verify|approve_claimed_accounting|{txn_id}")],
             [InlineKeyboardButton(text="✏️ تایید با مبلغ دیگر", callback_data=f"verify|approve_other|{txn_id}")],
             [InlineKeyboardButton(text="❌ رد تراکنش", callback_data=f"verify|reject|{txn_id}")],
             [InlineKeyboardButton(text="🔙 لیست پرداخت‌ها", callback_data="verify|list")],
         ]
     )
+
+
+def reject_reason_keyboard(txn_id: int) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="🧾 فیش تکراری", callback_data=f"verify|reject_preset|{txn_id}|duplicate")],
+        [InlineKeyboardButton(text="🖼️ تصویر نامرتبط", callback_data=f"verify|reject_preset|{txn_id}|invalid_image")],
+        [InlineKeyboardButton(text="🔎 اطلاعات ناکافی", callback_data=f"verify|reject_preset|{txn_id}|insufficient_info")],
+        [InlineKeyboardButton(text="💬 پیامک به‌جای فیش", callback_data=f"verify|reject_preset|{txn_id}|sms_instead")],
+        [InlineKeyboardButton(text="✍️ دلیل دیگر", callback_data=f"verify|reject_custom|{txn_id}")],
+        [InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"verify|open|{txn_id}")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def build_duplicate_lines(txn_id: int) -> str:
@@ -149,6 +163,30 @@ async def show_transaction_review(message: Message, txn_id: int) -> None:
         parse_mode="HTML",
         reply_markup=review_keyboard(txn_id),
     )
+
+
+async def finalize_rejection(
+    message: Message,
+    state: FSMContext,
+    bot: Bot,
+    txn_id: int,
+    reviewer_id: int,
+    reason: str,
+) -> bool:
+    rejected = reject_transaction_initial(txn_id, reviewer_id, reason)
+    if not rejected:
+        await state.clear()
+        await message.answer("❌ این تراکنش دیگر در صف بررسی اولیه نیست.")
+        return False
+
+    await message.answer(f"تراکنش #{txn_id} رد شد.")
+    await bot.send_message(
+        int(rejected["user_id"]),
+        f"❌ فیش شما رد شد.\nدلیل: {reason}\n"
+        "اگر نیاز به ثبت مجدد دارید می‌توانید دوباره فیش را همراه با اطلاعات کامل ارسال کنید.",
+    )
+    await state.clear()
+    return True
 
 
 @router.message(F.text == "💳 تایید پرداخت ها")
@@ -212,6 +250,39 @@ async def approve_with_claimed_amount(callback: CallbackQuery, state: FSMContext
     await bot.send_message(
         int(approved["user_id"]),
         f"✅ فیش شما تایید شد و {format_price(approved.get('amount') or 0)} تومان به کیف پول شما اضافه شد.\n"
+        f"💳 موجودی فعلی: {format_price(user_balance)} تومان",
+    )
+    await state.clear()
+    await callback.answer("تایید شد.")
+
+
+@router.callback_query(F.data.startswith("verify|approve_claimed_accounting|"))
+async def approve_with_claimed_amount_and_accounting(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("دسترسی نداری.", show_alert=True)
+    txn_id = int(callback.data.split("|")[2])
+    txn = get_transaction_with_user(txn_id)
+    if not txn or txn.get("status") not in INITIAL_REVIEW_STATUSES:
+        return await callback.answer("این تراکنش دیگر در صف بررسی نیست.", show_alert=True)
+
+    approved = approve_transaction_with_accounting(
+        txn_id=txn_id,
+        reviewer_id=callback.from_user.id,
+        amount=int(txn.get("amount_claimed") or 0),
+        accounting_note="تایید حسابداری همزمان با تایید اولیه انجام شد.",
+    )
+    if not approved:
+        return await callback.answer("تایید انجام نشد.", show_alert=True)
+
+    user_balance = get_user_balance(int(approved["user_id"]))
+    await callback.message.answer(
+        f"✅ تراکنش #{txn_id} تایید شد و حسابداری هم همان لحظه نهایی شد.\n"
+        f"💰 مبلغ: {format_price(approved.get('amount') or 0)} تومان\n"
+        f"💳 موجودی فعلی کاربر: {format_price(user_balance)} تومان"
+    )
+    await bot.send_message(
+        int(approved["user_id"]),
+        f"✅ فیش شما تایید نهایی شد و {format_price(approved.get('amount') or 0)} تومان به کیف پول شما اضافه شد.\n"
         f"💳 موجودی فعلی: {format_price(user_balance)} تومان",
     )
     await state.clear()
@@ -294,8 +365,51 @@ async def reject_transaction(callback: CallbackQuery, state: FSMContext):
 
     await state.clear()
     await state.update_data(txn_id=txn_id)
+    await callback.message.answer(
+        f"دلیل رد تراکنش #{txn_id} را انتخاب کن یا اگر لازم بود دلیل سفارشی بفرست:",
+        reply_markup=reject_reason_keyboard(txn_id),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("verify|reject_preset|"))
+async def reject_transaction_with_preset(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("دسترسی نداری.", show_alert=True)
+
+    _, _, txn_id, reason_key = callback.data.split("|", 3)
+    reason = PRESET_REJECT_REASONS.get(reason_key)
+    txn = get_transaction_with_user(int(txn_id))
+    if not reason:
+        return await callback.answer("دلیل نامعتبر است.", show_alert=True)
+    if not txn or txn.get("status") not in INITIAL_REVIEW_STATUSES:
+        return await callback.answer("این تراکنش دیگر در صف بررسی نیست.", show_alert=True)
+
+    await finalize_rejection(
+        message=callback.message,
+        state=state,
+        bot=bot,
+        txn_id=int(txn_id),
+        reviewer_id=callback.from_user.id,
+        reason=reason,
+    )
+    await callback.answer("رد شد.")
+
+
+@router.callback_query(F.data.startswith("verify|reject_custom|"))
+async def reject_transaction_custom_reason(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("دسترسی نداری.", show_alert=True)
+
+    txn_id = int(callback.data.split("|")[2])
+    txn = get_transaction_with_user(txn_id)
+    if not txn or txn.get("status") not in INITIAL_REVIEW_STATUSES:
+        return await callback.answer("این تراکنش دیگر در صف بررسی نیست.", show_alert=True)
+
+    await state.clear()
+    await state.update_data(txn_id=txn_id)
     await state.set_state(VerifyTxn.waiting_for_reject_reason)
-    await callback.message.answer(f"دلیل رد تراکنش #{txn_id} را وارد کن:")
+    await callback.message.answer(f"دلیل سفارشی رد تراکنش #{txn_id} را وارد کن:")
     await callback.answer()
 
 
@@ -312,16 +426,11 @@ async def receive_reject_reason(message: Message, state: FSMContext, bot: Bot):
         await message.answer("❌ دلیل رد را وارد کن.")
         return
 
-    rejected = reject_transaction_initial(int(txn_id), message.from_user.id, reason)
-    if not rejected:
-        await state.clear()
-        await message.answer("❌ این تراکنش دیگر در صف بررسی اولیه نیست.")
-        return
-
-    await message.answer(f"تراکنش #{txn_id} رد شد.")
-    await bot.send_message(
-        int(rejected["user_id"]),
-        f"❌ فیش شما رد شد.\nدلیل: {reason}\n"
-        "اگر نیاز به ثبت مجدد دارید می‌توانید دوباره فیش را همراه با اطلاعات کامل ارسال کنید.",
+    await finalize_rejection(
+        message=message,
+        state=state,
+        bot=bot,
+        txn_id=int(txn_id),
+        reviewer_id=message.from_user.id,
+        reason=reason,
     )
-    await state.clear()

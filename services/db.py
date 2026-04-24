@@ -7,6 +7,10 @@ import jdatetime
 from config import DB_PATH
 
 
+def _now_text(timespec: str = "minutes") -> str:
+    return datetime.now().isoformat(sep=" ", timespec=timespec)
+
+
 def create_tables():
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
@@ -16,6 +20,19 @@ def create_tables():
             existing_columns = [row[1] for row in cursor.execute(f"PRAGMA table_info({table})").fetchall()]
             if column not in existing_columns:
                 cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+        def normalize_datetime_column(table: str, column: str):
+            existing_columns = [row[1] for row in cursor.execute(f"PRAGMA table_info({table})").fetchall()]
+            if column not in existing_columns:
+                return
+            cursor.execute(
+                f"""
+                UPDATE {table}
+                SET {column} = substr(replace({column}, 'T', ' '), 1, 16)
+                WHERE {column} IS NOT NULL
+                  AND TRIM({column}) != ''
+                """
+            )
 
         cursor.execute("""
                 CREATE TABLE IF NOT EXISTS accounts (
@@ -91,14 +108,6 @@ def create_tables():
                 """)
 
         cursor.execute("""
-                CREATE TABLE IF NOT EXISTS speed_limits (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    threshold_gb INTEGER,
-                    speed TEXT
-                )
-                """)
-
-        cursor.execute("""
                 CREATE TABLE IF NOT EXISTS transactions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL,
@@ -164,10 +173,93 @@ def create_tables():
                 )
                 """)
 
+        cursor.execute("""
+                CREATE TABLE IF NOT EXISTS volume_packages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    volume_gb INTEGER NOT NULL,
+                    price INTEGER NOT NULL,
+                    sort_order INTEGER NOT NULL DEFAULT 0,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    is_archived INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                """)
+
+        cursor.execute("""
+                CREATE TABLE IF NOT EXISTS volume_package_segments (
+                    package_id INTEGER NOT NULL,
+                    segment_id INTEGER NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (package_id, segment_id),
+                    FOREIGN KEY(package_id) REFERENCES volume_packages(id),
+                    FOREIGN KEY(segment_id) REFERENCES segments(id)
+                )
+                """)
+
+        cursor.execute("""
+                CREATE TABLE IF NOT EXISTS volume_package_categories (
+                    package_id INTEGER NOT NULL,
+                    category TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (package_id, category),
+                    FOREIGN KEY(package_id) REFERENCES volume_packages(id)
+                )
+                """)
+
+        cursor.execute("""
+                CREATE TABLE IF NOT EXISTS order_volume_allocations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    order_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    package_id INTEGER,
+                    package_name TEXT,
+                    source_type TEXT NOT NULL DEFAULT 'user_package',
+                    status TEXT NOT NULL DEFAULT 'applied',
+                    volume_gb INTEGER NOT NULL DEFAULT 0,
+                    price INTEGER NOT NULL DEFAULT 0,
+                    note TEXT,
+                    admin_id INTEGER,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    applied_at TEXT,
+                    FOREIGN KEY(order_id) REFERENCES orders(id),
+                    FOREIGN KEY(package_id) REFERENCES volume_packages(id),
+                    FOREIGN KEY(user_id) REFERENCES users(id)
+                )
+                """)
+
+        cursor.execute("""
+                CREATE TABLE IF NOT EXISTS conversion_offer_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    service_id INTEGER NOT NULL,
+                    previous_plan_id INTEGER,
+                    previous_expire_at TEXT,
+                    previous_remaining_volume REAL,
+                    target_plan_id INTEGER,
+                    new_service_id INTEGER,
+                    status TEXT NOT NULL,
+                    notification_sent_at TEXT,
+                    viewed_at TEXT,
+                    selected_at TEXT,
+                    confirmed_at TEXT,
+                    converted_at TEXT,
+                    failure_reason TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(user_id) REFERENCES users(id),
+                    FOREIGN KEY(service_id) REFERENCES orders(id),
+                    FOREIGN KEY(new_service_id) REFERENCES orders(id)
+                )
+                """)
+
         ensure_column("plans", "duration_days", "INTEGER")
         ensure_column("plans", "category", "TEXT DEFAULT 'standard'")
         ensure_column("plans", "access_level", "TEXT DEFAULT 'all'")
         ensure_column("plans", "display_context", "TEXT DEFAULT 'all'")
+        ensure_column("plans", "is_archived", "INTEGER DEFAULT 0")
+        ensure_column("plans", "archived_at", "TEXT")
 
         ensure_column("users", "last_name", "TEXT")
         ensure_column("users", "message_name", "TEXT")
@@ -183,6 +275,16 @@ def create_tables():
         ensure_column("orders", "usage_last_update", "TEXT")
         ensure_column("orders", "usage_applied_speed", "TEXT")
         ensure_column("orders", "usage_notif_level", "INTEGER DEFAULT 0")
+        ensure_column("orders", "usage_lock_applied", "INTEGER DEFAULT 0")
+        ensure_column("orders", "eligible_for_conversion", "INTEGER DEFAULT 0")
+        ensure_column("orders", "old_limited_service", "INTEGER DEFAULT 0")
+        ensure_column("orders", "converted_by_offer", "INTEGER DEFAULT 0")
+        ensure_column("orders", "converted_to_service_id", "INTEGER")
+        ensure_column("orders", "replaced_from_service_id", "INTEGER")
+        ensure_column("orders", "service_source", "TEXT")
+        ensure_column("orders", "closed_by_conversion_at", "TEXT")
+        ensure_column("orders", "last_conversion_notification_at", "TEXT")
+        ensure_column("orders", "last_renewal_offer_notification_at", "TEXT")
 
         ensure_column("transactions", "amount_claimed", "INTEGER DEFAULT 0")
         ensure_column("transactions", "destination_card_id", "INTEGER")
@@ -221,8 +323,53 @@ def create_tables():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_segment_users_user_id ON segment_users(user_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_plan_segments_plan_id ON plan_segments(plan_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_plan_segments_segment_id ON plan_segments(segment_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_volume_package_segments_package_id ON volume_package_segments(package_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_volume_package_segments_segment_id ON volume_package_segments(segment_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_volume_package_categories_package_id ON volume_package_categories(package_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_volume_package_categories_category ON volume_package_categories(category)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_transactions_status_created_at ON transactions(status, created_at)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_transactions_photo_hash ON transactions(photo_hash)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_username_status ON orders(username, status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_conversion_eligibility ON orders(user_id, status, eligible_for_conversion)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_old_limited_service ON orders(old_limited_service)")
+        # A plain UNIQUE index is enough here: SQLite allows multiple NULL values,
+        # and this form is compatible with older SQLite builds that do not support partial indexes.
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_replaced_from_service_id ON orders(replaced_from_service_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_order_volume_allocations_order_id ON order_volume_allocations(order_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_order_volume_allocations_user_id ON order_volume_allocations(user_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_volume_packages_archive_active ON volume_packages(is_archived, is_active)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversion_offer_logs_service_status ON conversion_offer_logs(service_id, status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversion_offer_logs_user_status ON conversion_offer_logs(user_id, status)")
+        cursor.execute("DROP TABLE IF EXISTS speed_limits")
+
+        normalize_datetime_column("feedbacks", "created_at")
+        normalize_datetime_column("orders", "created_at")
+        normalize_datetime_column("transactions", "created_at")
+        normalize_datetime_column("transactions", "submitted_at")
+        normalize_datetime_column("transactions", "admin_reviewed_at")
+        normalize_datetime_column("transactions", "accounting_reviewed_at")
+        normalize_datetime_column("transactions", "balance_reverted_at")
+        normalize_datetime_column("users", "created_at")
+        normalize_datetime_column("ownership_transfers", "transferred_at")
+        normalize_datetime_column("orders", "closed_by_conversion_at")
+        normalize_datetime_column("orders", "last_conversion_notification_at")
+        normalize_datetime_column("orders", "last_renewal_offer_notification_at")
+        normalize_datetime_column("segments", "created_at")
+        normalize_datetime_column("segment_users", "created_at")
+        normalize_datetime_column("plan_segments", "created_at")
+        normalize_datetime_column("volume_package_segments", "created_at")
+        normalize_datetime_column("volume_package_categories", "created_at")
+        normalize_datetime_column("volume_packages", "created_at")
+        normalize_datetime_column("volume_packages", "updated_at")
+        normalize_datetime_column("order_volume_allocations", "created_at")
+        normalize_datetime_column("order_volume_allocations", "applied_at")
+        normalize_datetime_column("conversion_offer_logs", "notification_sent_at")
+        normalize_datetime_column("conversion_offer_logs", "viewed_at")
+        normalize_datetime_column("conversion_offer_logs", "selected_at")
+        normalize_datetime_column("conversion_offer_logs", "confirmed_at")
+        normalize_datetime_column("conversion_offer_logs", "converted_at")
+        normalize_datetime_column("conversion_offer_logs", "created_at")
+        normalize_datetime_column("conversion_offer_logs", "updated_at")
         initialize_runtime_settings_schema(cursor)
         conn.commit()
 
@@ -232,9 +379,9 @@ def add_user(user_id, first_name, username, role):
         cursor = conn.cursor()
         cursor.execute("""
                        INSERT
-                       OR IGNORE INTO users (id, first_name, username, role)
-            VALUES (?, ?, ?, ?)
-                       """, (user_id, first_name, username, role))
+                       OR IGNORE INTO users (id, first_name, username, role, created_at)
+            VALUES (?, ?, ?, ?, ?)
+                       """, (user_id, first_name, username, role, _now_text()))
         conn.commit()
 
 
@@ -270,6 +417,13 @@ def _normalize_segment_slug(value: str) -> str:
     while "__" in slug:
         slug = slug.replace("__", "_")
     return slug.strip("_")
+
+
+def _normalize_volume_package_category(value: str) -> str:
+    category = (value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    while "__" in category:
+        category = category.replace("__", "_")
+    return category.strip("_")
 
 
 def _get_user_role_for_plans(conn: sqlite3.Connection, user_id: Optional[int]) -> Optional[str]:
@@ -350,6 +504,7 @@ def _get_context_plans(display_context: Optional[str] = None, user_id: Optional[
                 COALESCE(NULLIF(display_context, ''), 'all') AS display_context
             FROM plans
             WHERE visible = 1
+              AND COALESCE(is_archived, 0) = 0
             """,
             [],
             user_id=user_id,
@@ -391,9 +546,60 @@ def get_all_plans():
                 COALESCE(NULLIF(display_context, ''), 'all') AS display_context
             FROM plans
             WHERE visible = 1
+              AND COALESCE(is_archived, 0) = 0
             ORDER BY order_priority DESC, id ASC
         """)
         return [dict(row) for row in cursor.fetchall()]
+
+
+def get_plans_for_admin(include_archived: bool = False):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        query = """
+            SELECT
+                id,
+                name,
+                volume_gb,
+                duration_months,
+                duration_days,
+                max_users,
+                price,
+                order_priority,
+                visible,
+                location,
+                is_unlimited,
+                group_name,
+                COALESCE(is_archived, 0) AS is_archived,
+                archived_at,
+                COALESCE(NULLIF(access_level, ''), 'all') AS access_level,
+                COALESCE(NULLIF(display_context, ''), 'all') AS display_context
+            FROM plans
+        """
+        params: list = []
+        if include_archived:
+            query += "\nWHERE COALESCE(is_archived, 0) = 1"
+        else:
+            query += "\nWHERE COALESCE(is_archived, 0) = 0"
+        query += "\nORDER BY id ASC"
+        cursor.execute(query, params)
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def set_plan_archived(plan_id: int, archived: bool):
+    archived_value = 1 if archived else 0
+    archived_at = _now_text() if archived else None
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE plans
+            SET is_archived = ?,
+                archived_at = ?,
+                visible = CASE WHEN ? = 1 THEN 0 ELSE visible END
+            WHERE id = ?
+        """, (archived_value, archived_at, archived_value, plan_id))
+        conn.commit()
+        return cursor.rowcount > 0
 
 
 def get_buy_plans(user_id: Optional[int] = None):
@@ -528,7 +734,16 @@ def delete_segment(segment_id: int):
         cursor = conn.cursor()
         cursor.execute("DELETE FROM segment_users WHERE segment_id = ?", (segment_id,))
         cursor.execute("DELETE FROM plan_segments WHERE segment_id = ?", (segment_id,))
+        cursor.execute("DELETE FROM volume_package_segments WHERE segment_id = ?", (segment_id,))
         cursor.execute("DELETE FROM segments WHERE id = ?", (segment_id,))
+        conn.commit()
+
+
+def delete_volume_package_audience(package_id: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM volume_package_segments WHERE package_id = ?", (package_id,))
+        cursor.execute("DELETE FROM volume_package_categories WHERE package_id = ?", (package_id,))
         conn.commit()
 
 
@@ -854,7 +1069,7 @@ def get_next_account_number():
 
 
 def insert_order(user_id, plan_id, username, price, status, volume_gb):
-    created_at = datetime.now().isoformat()
+    created_at = _now_text()
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute('''
@@ -867,7 +1082,7 @@ def insert_order(user_id, plan_id, username, price, status, volume_gb):
 
 
 def insert_renewed_order(user_id, plan_id, username, price, status, is_renewal_of_order, volume_gb):
-    created_at = datetime.now().isoformat()
+    created_at = _now_text()
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute('''
@@ -881,7 +1096,7 @@ def insert_renewed_order(user_id, plan_id, username, price, status, is_renewal_o
 
 def insert_renewed_order_with_auto_renew(user_id, plan_id, username, price, status, is_renewal_of_order, volume_gb,
                                          auto_renew):
-    created_at = datetime.now().isoformat()
+    created_at = _now_text()
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute('''
@@ -916,7 +1131,7 @@ def get_all_photo_hashes():
 
 
 def insert_transaction(user_id, photo_id, photo_path, photo_hash):
-    created_at = datetime.now().isoformat()
+    created_at = _now_text()
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute('''
@@ -1036,27 +1251,50 @@ def update_order_status(order_id: int, new_status: str):
         conn.commit()
 
 
-def get_user_services(user_id: int):
+def update_order_conversion_markers(order_id: int, enabled: bool):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE orders
+            SET eligible_for_conversion = ?,
+                old_limited_service = ?,
+                last_conversion_notification_at = CASE WHEN ? = 1 THEN last_conversion_notification_at ELSE NULL END
+            WHERE id = ?
+            """,
+            (1 if enabled else 0, 1 if enabled else 0, 1 if enabled else 0, order_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def get_user_services(user_id: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
         cursor.execute("""
-                SELECT 
+                SELECT
                 orders.id,
                 orders.username,
                 accounts.password,
                 plans.name AS plan_name,
+                plans.is_unlimited,
                 orders.starts_at,
                 orders.expires_at,
                 orders.status,
-                orders.created_at
+                orders.created_at,
+                orders.volume_gb,
+                orders.extra_volume_gb,
+                orders.usage_total_mb,
+                orders.usage_last_update
                 FROM orders
                 JOIN plans ON orders.plan_id = plans.id
                 JOIN users ON orders.user_id = users.id
                 JOIN accounts ON orders.username = accounts.username
-                WHERE users.id = ? and orders.status not in ("renewed" ,"archived")
+                WHERE users.id = ? and orders.status not in ("renewed", "archived", "canceled", "converted")
                 ORDER by orders.username,orders.created_at
             """, (user_id,))
-        return cursor.fetchall()
+        return [dict(row) for row in cursor.fetchall()]
 
 
 def get_user_services_for_password_change(user_id: int):
@@ -1074,7 +1312,7 @@ def get_user_services_for_password_change(user_id: int):
                     LEFT JOIN plans p ON p.id = o2.plan_id
                     WHERE o2.user_id = ?
                       AND o2.username = a.username
-                      AND o2.status NOT IN ('archived', 'renewed', 'canceled', 'waiting_for_payment')
+                      AND o2.status NOT IN ('archived', 'renewed', 'canceled', 'converted', 'waiting_for_payment')
                     ORDER BY o2.created_at DESC, o2.id DESC
                     LIMIT 1
                 ) AS plan_name,
@@ -1083,7 +1321,7 @@ def get_user_services_for_password_change(user_id: int):
                     FROM orders o3
                     WHERE o3.user_id = ?
                       AND o3.username = a.username
-                      AND o3.status NOT IN ('archived', 'renewed', 'canceled', 'waiting_for_payment')
+                      AND o3.status NOT IN ('archived', 'renewed', 'canceled', 'converted', 'waiting_for_payment')
                     ORDER BY o3.created_at DESC, o3.id DESC
                     LIMIT 1
                 ) AS status
@@ -1093,7 +1331,7 @@ def get_user_services_for_password_change(user_id: int):
                 FROM orders o
                 WHERE o.user_id = ?
                   AND o.username = a.username
-                  AND o.status NOT IN ('archived', 'renewed', 'canceled', 'waiting_for_payment')
+                  AND o.status NOT IN ('archived', 'renewed', 'canceled', 'converted', 'waiting_for_payment')
             )
             ORDER BY a.username ASC
         """, (user_id, user_id, user_id))
@@ -1178,7 +1416,7 @@ def archive_old_orders():
     now = jdatetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     cursor.execute("""
         SELECT id, expires_at FROM orders
-        WHERE status = 'expired' or status = 'renewed'
+        WHERE status IN ('expired', 'renewed', 'converted')
     """)
     rows = cursor.fetchall()
 
@@ -1313,6 +1551,159 @@ def get_order_data(order_id):
         return dict(row) if row else None
 
 
+def get_order_with_plan(order_id: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                o.*,
+                p.name AS plan_name,
+                p.group_name,
+                p.duration_days,
+                p.duration_months,
+                p.is_unlimited,
+                COALESCE(p.is_archived, 0) AS plan_is_archived,
+                u.first_name,
+                u.last_name,
+                u.username AS telegram_username
+            FROM orders o
+            LEFT JOIN plans p ON p.id = o.plan_id
+            LEFT JOIN users u ON u.id = o.user_id
+            WHERE o.id = ?
+            LIMIT 1
+        """, (order_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
+def search_orders_for_admin(keyword: str, limit: int = 30, archived_only: bool = False):
+    clean = (keyword or "").strip()
+    if not clean:
+        return []
+
+    like_value = f"%{clean}%"
+    status_filter = "COALESCE(o.status, '') = 'archived'" if archived_only else "COALESCE(o.status, '') != 'archived'"
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                o.id,
+                o.user_id,
+                o.username,
+                o.status,
+                o.price,
+                o.created_at,
+                o.plan_id,
+                o.extra_volume_gb,
+                p.name AS plan_name,
+                u.first_name,
+                u.last_name
+            FROM orders o
+            LEFT JOIN plans p ON p.id = o.plan_id
+            LEFT JOIN users u ON u.id = o.user_id
+            WHERE (
+                   CAST(o.id AS TEXT) = ?
+                OR CAST(o.user_id AS TEXT) = ?
+                OR LOWER(COALESCE(o.username, '')) LIKE LOWER(?)
+            )
+              AND """ + status_filter + """
+            ORDER BY o.id ASC
+            LIMIT ?
+        """, (clean, clean, like_value, int(limit)))
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def get_order_children(parent_order_id: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT *
+            FROM orders
+            WHERE is_renewal_of_order = ?
+            ORDER BY id DESC
+        """, (parent_order_id,))
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def get_open_orders_by_username(username: str, exclude_order_ids: Optional[List[int]] = None):
+    exclude_order_ids = exclude_order_ids or []
+    placeholders = ", ".join("?" for _ in exclude_order_ids)
+    params: list = [username]
+    query = """
+        SELECT *
+        FROM orders
+        WHERE username = ?
+          AND status NOT IN ('canceled', 'renewed', 'archived', 'converted')
+    """
+    if placeholders:
+        query += f"\nAND id NOT IN ({placeholders})"
+        params.extend(exclude_order_ids)
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(query, params)
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def get_volume_services_for_user(user_id: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                o.id,
+                o.user_id,
+                o.username,
+                o.status,
+                o.price,
+                o.volume_gb,
+                o.extra_volume_gb,
+                o.usage_total_mb,
+                o.usage_applied_speed,
+                o.starts_at,
+                o.expires_at,
+                p.name AS plan_name,
+                p.group_name,
+                p.is_unlimited
+            FROM orders o
+            JOIN plans p ON p.id = o.plan_id
+            WHERE o.user_id = ?
+              AND o.status IN ('active', 'waiting_for_renewal', 'waiting_for_renewal_not_paid', 'reserved')
+              AND COALESCE(p.is_unlimited, 0) = 0
+            ORDER BY o.username ASC, o.id DESC
+        """, (user_id,))
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def get_order_volume_purchase_history(order_id: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                id,
+                order_id,
+                user_id,
+                package_id,
+                package_name,
+                source_type,
+                status,
+                volume_gb,
+                price,
+                note,
+                admin_id,
+                created_at,
+                applied_at
+            FROM order_volume_allocations
+            WHERE order_id = ?
+            ORDER BY id DESC
+        """, (order_id,))
+        return [dict(row) for row in cursor.fetchall()]
+
+
 def get_order_plan_duration(order_id):
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
@@ -1344,7 +1735,15 @@ def get_orders_for_notifications(expires_at):
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("""
-                SELECT id, user_id, username, expires_at, status, last_notif_level
+                SELECT
+                    id,
+                    user_id,
+                    plan_id,
+                    username,
+                    expires_at,
+                    status,
+                    last_notif_level,
+                    last_renewal_offer_notification_at
             FROM orders
             WHERE status IN ('active', 'waiting_for_renewal', 'waiting_for_renewal_not_paid')
             AND expires_at IS NOT NULL
@@ -1361,6 +1760,20 @@ def update_order_last_notif_level(level_needed, order_id):
                     SET last_notif_level  = ?
                     WHERE id = ?
                 """, (level_needed, order_id))
+        conn.commit()
+
+
+def update_order_last_renewal_offer_notification_at(sent_at: str, order_id: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE orders
+            SET last_renewal_offer_notification_at = ?
+            WHERE id = ?
+            """,
+            (sent_at, order_id),
+        )
         conn.commit()
 
 
@@ -1385,6 +1798,7 @@ def get_orders_for_usage_notifications():
                 o.extra_volume_gb,
                 o.usage_total_mb,
                 o.usage_notif_level,
+                o.usage_lock_applied,
                 u.message_name
             FROM orders o
             JOIN plans p ON p.id = o.plan_id
@@ -1475,6 +1889,331 @@ def get_active_cards():
         ]
 
 
+def get_volume_packages(include_archived: bool = False):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        query = """
+            SELECT
+                vp.id,
+                vp.name,
+                vp.volume_gb,
+                vp.price,
+                vp.sort_order,
+                vp.is_active,
+                COALESCE(vp.is_archived, 0) AS is_archived,
+                vp.created_at,
+                vp.updated_at,
+                COALESCE(vps.segment_count, 0) AS segment_count,
+                COALESCE(vpc.category_count, 0) AS category_count
+            FROM volume_packages vp
+            LEFT JOIN (
+                SELECT package_id, COUNT(*) AS segment_count
+                FROM volume_package_segments
+                GROUP BY package_id
+            ) vps ON vps.package_id = vp.id
+            LEFT JOIN (
+                SELECT package_id, COUNT(*) AS category_count
+                FROM volume_package_categories
+                GROUP BY package_id
+            ) vpc ON vpc.package_id = vp.id
+        """
+        if include_archived:
+            query += "\nWHERE COALESCE(vp.is_archived, 0) = 1"
+        else:
+            query += "\nWHERE COALESCE(vp.is_archived, 0) = 0"
+        query += "\nORDER BY vp.sort_order DESC, vp.id ASC"
+        cursor.execute(query)
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def get_active_volume_packages(user_id: Optional[int] = None, service_id: Optional[int] = None):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        params: list = []
+        segment_filter = ""
+        if user_id is not None:
+            segment_filter = """
+              AND (
+                NOT EXISTS (
+                    SELECT 1
+                    FROM volume_package_segments vps2
+                    JOIN segments s2 ON s2.id = vps2.segment_id
+                    WHERE vps2.package_id = vp.id
+                      AND COALESCE(s2.is_active, 1) = 1
+                )
+                OR EXISTS (
+                    SELECT 1
+                    FROM volume_package_segments vps2
+                    JOIN segments s2 ON s2.id = vps2.segment_id
+                    JOIN segment_users su2 ON su2.segment_id = vps2.segment_id
+                    WHERE vps2.package_id = vp.id
+                      AND COALESCE(s2.is_active, 1) = 1
+                      AND su2.user_id = ?
+                )
+              )
+            """
+            params.append(user_id)
+        else:
+            segment_filter = """
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM volume_package_segments vps2
+                    JOIN segments s2 ON s2.id = vps2.segment_id
+                    WHERE vps2.package_id = vp.id
+                      AND COALESCE(s2.is_active, 1) = 1
+              )
+            """
+
+        category_filter = ""
+        if service_id is not None:
+            category_filter = """
+              AND (
+                NOT EXISTS (
+                    SELECT 1
+                    FROM volume_package_categories vpc2
+                    WHERE vpc2.package_id = vp.id
+                )
+                OR EXISTS (
+                    SELECT 1
+                    FROM volume_package_categories vpc2
+                    JOIN orders service_order ON service_order.id = ?
+                    JOIN plans service_plan ON service_plan.id = service_order.plan_id
+                    WHERE vpc2.package_id = vp.id
+                      AND vpc2.category = COALESCE(NULLIF(service_plan.category, ''), 'standard')
+                )
+              )
+            """
+            params.append(service_id)
+
+        cursor.execute(f"""
+            SELECT
+                vp.id,
+                vp.name,
+                vp.volume_gb,
+                vp.price,
+                vp.sort_order,
+                vp.is_active,
+                COALESCE(vp.is_archived, 0) AS is_archived,
+                vp.created_at,
+                vp.updated_at,
+                COALESCE(vps.segment_count, 0) AS segment_count,
+                COALESCE(vpc.category_count, 0) AS category_count
+            FROM volume_packages vp
+            LEFT JOIN (
+                SELECT package_id, COUNT(*) AS segment_count
+                FROM volume_package_segments
+                GROUP BY package_id
+            ) vps ON vps.package_id = vp.id
+            LEFT JOIN (
+                SELECT package_id, COUNT(*) AS category_count
+                FROM volume_package_categories
+                GROUP BY package_id
+            ) vpc ON vpc.package_id = vp.id
+            WHERE COALESCE(vp.is_archived, 0) = 0
+              AND COALESCE(vp.is_active, 1) = 1
+              {segment_filter}
+              {category_filter}
+            ORDER BY vp.sort_order DESC, vp.id ASC
+        """, params)
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def get_volume_package(package_id: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                vp.id,
+                vp.name,
+                vp.volume_gb,
+                vp.price,
+                vp.sort_order,
+                vp.is_active,
+                COALESCE(vp.is_archived, 0) AS is_archived,
+                vp.created_at,
+                vp.updated_at,
+                COALESCE(vps.segment_count, 0) AS segment_count,
+                COALESCE(vpc.category_count, 0) AS category_count
+            FROM volume_packages vp
+            LEFT JOIN (
+                SELECT package_id, COUNT(*) AS segment_count
+                FROM volume_package_segments
+                GROUP BY package_id
+            ) vps ON vps.package_id = vp.id
+            LEFT JOIN (
+                SELECT package_id, COUNT(*) AS category_count
+                FROM volume_package_categories
+                GROUP BY package_id
+            ) vpc ON vpc.package_id = vp.id
+            WHERE vp.id = ?
+            LIMIT 1
+        """, (package_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
+def get_volume_package_segments(package_id: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                s.id,
+                s.slug,
+                s.title,
+                s.description,
+                s.is_active
+            FROM volume_package_segments vps
+            JOIN segments s ON s.id = vps.segment_id
+            WHERE vps.package_id = ?
+            ORDER BY s.title COLLATE NOCASE ASC, s.id ASC
+        """, (package_id,))
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def get_volume_package_categories(package_id: int) -> List[str]:
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT category
+            FROM volume_package_categories
+            WHERE package_id = ?
+            ORDER BY category ASC
+        """, (package_id,))
+        return [row[0] for row in cursor.fetchall()]
+
+
+def attach_segments_to_volume_package(package_id: int, segment_ids: List[int]) -> int:
+    cleaned_ids = sorted({int(segment_id) for segment_id in segment_ids})
+    if not cleaned_ids:
+        return 0
+
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        total_added = 0
+        for segment_id in cleaned_ids:
+            cursor.execute("""
+                INSERT OR IGNORE INTO volume_package_segments (package_id, segment_id)
+                VALUES (?, ?)
+            """, (package_id, segment_id))
+            total_added += cursor.rowcount
+        conn.commit()
+        return total_added
+
+
+def detach_segments_from_volume_package(package_id: int, segment_ids: List[int]) -> int:
+    cleaned_ids = sorted({int(segment_id) for segment_id in segment_ids})
+    if not cleaned_ids:
+        return 0
+
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.executemany("""
+            DELETE FROM volume_package_segments
+            WHERE package_id = ? AND segment_id = ?
+        """, [(package_id, segment_id) for segment_id in cleaned_ids])
+        conn.commit()
+        return cursor.rowcount
+
+
+def attach_categories_to_volume_package(package_id: int, categories: List[str]) -> int:
+    cleaned_categories = sorted({
+        normalized
+        for normalized in (_normalize_volume_package_category(category) for category in categories)
+        if normalized
+    })
+    if not cleaned_categories:
+        return 0
+
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        total_added = 0
+        for category in cleaned_categories:
+            cursor.execute("""
+                INSERT OR IGNORE INTO volume_package_categories (package_id, category)
+                VALUES (?, ?)
+            """, (package_id, category))
+            total_added += cursor.rowcount
+        conn.commit()
+        return total_added
+
+
+def detach_categories_from_volume_package(package_id: int, categories: List[str]) -> int:
+    cleaned_categories = sorted({
+        normalized
+        for normalized in (_normalize_volume_package_category(category) for category in categories)
+        if normalized
+    })
+    if not cleaned_categories:
+        return 0
+
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.executemany("""
+            DELETE FROM volume_package_categories
+            WHERE package_id = ? AND category = ?
+        """, [(package_id, category) for category in cleaned_categories])
+        conn.commit()
+        return cursor.rowcount
+
+
+def add_volume_package(name: str, volume_gb: int, price: int, sort_order: int = 0):
+    now_text = _now_text()
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO volume_packages (
+                name,
+                volume_gb,
+                price,
+                sort_order,
+                is_active,
+                is_archived,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, 1, 0, ?, ?)
+        """, (name, volume_gb, price, sort_order, now_text, now_text))
+        conn.commit()
+        return cursor.lastrowid
+
+
+def update_volume_package_field(package_id: int, field: str, value):
+    allowed = {"name", "volume_gb", "price", "sort_order", "is_active"}
+    if field not in allowed:
+        return False
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            UPDATE volume_packages
+            SET {field} = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (value, _now_text(), package_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def set_volume_package_archived(package_id: int, archived: bool):
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE volume_packages
+            SET is_archived = ?,
+                is_active = CASE WHEN ? = 1 THEN 0 ELSE is_active END,
+                updated_at = ?
+            WHERE id = ?
+        """, (1 if archived else 0, 1 if archived else 0, _now_text(), package_id))
+        conn.commit()
+        return cursor.rowcount > 0
+
+
 def get_active_locations_by_category(category: str, user_id: Optional[int] = None,
                                      display_context: Optional[str] = None):
     with sqlite3.connect(DB_PATH) as conn:
@@ -1486,6 +2225,7 @@ def get_active_locations_by_category(category: str, user_id: Optional[int] = Non
             FROM plans
             WHERE category = ?
               AND visible = 1
+              AND COALESCE(is_archived, 0) = 0
               AND location IS NOT NULL
             """,
             [category],
@@ -1691,7 +2431,7 @@ def get_distinct_usernames_by_user_id(user_id: int):
             FROM orders
             WHERE user_id = ?
               AND username IS NOT NULL
-              AND status NOT IN ('archived', 'renewed')
+              AND status NOT IN ('archived', 'renewed', 'converted')
             ORDER BY username
         """, (user_id,))
         rows = cursor.fetchall()
@@ -1741,7 +2481,7 @@ def transfer_orders_by_username_to_another_user(from_user_id: int, to_user_id: i
                 total_orders
             )
             VALUES (?, ?, ?, ?, ?, ?)
-        """, (from_user_id, to_user_id, username, from_user_id, datetime.now().isoformat(), total_orders))
+        """, (from_user_id, to_user_id, username, from_user_id, _now_text(), total_orders))
 
         conn.commit()
         return True, None, total_orders
