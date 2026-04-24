@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Union
 
 from config import DB_PATH
 
@@ -639,7 +639,7 @@ def get_payment_common_amounts() -> list[int]:
     return amounts or list(DEFAULT_PAYMENT_COMMON_AMOUNTS)
 
 
-def set_payment_common_amounts(amounts: Iterable[int] | str) -> list[int]:
+def set_payment_common_amounts(amounts: Union[Iterable[int], str]) -> list[int]:
     if isinstance(amounts, str):
         cleaned = parse_payment_common_amounts(amounts)
     else:

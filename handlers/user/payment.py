@@ -17,6 +17,7 @@ from services.payment_workflow import (
     duplicate_reason_label,
     format_card_number_for_display,
     get_active_bank_cards,
+    get_receipt_bank_cards,
     get_duplicate_candidates,
     get_transaction,
     normalize_card_number,
@@ -115,7 +116,7 @@ def amount_keyboard() -> InlineKeyboardMarkup:
 
 def destination_card_keyboard() -> InlineKeyboardMarkup:
     rows = []
-    for card in get_active_bank_cards():
+    for card in get_receipt_bank_cards():
         label = f"{ltr_card_text(card['card_number'])} | {card.get('bank_name') or '-'}"
         rows.append(
             [
@@ -272,11 +273,11 @@ def build_admin_submission_caption(txn: dict) -> str:
 async def register_receipt_upload(message: Message, state: FSMContext, bot: Bot) -> bool:
     ensure_user_record(message)
 
-    active_cards = get_active_bank_cards()
-    if not active_cards:
+    receipt_cards = get_receipt_bank_cards()
+    if not receipt_cards:
         await state.clear()
         await message.answer(
-            "❌ در حال حاضر هیچ کارت فعالی برای شارژ حساب ثبت نشده است.",
+            "❌ در حال حاضر هیچ کارتی برای ثبت فیش فعال نشده است.",
             reply_markup=main_menu_keyboard_for_user(message.from_user.id),
         )
         return False

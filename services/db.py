@@ -57,7 +57,8 @@ def create_tables():
                     owner_name TEXT,
                     bank_name TEXT,
                     priority INTEGER NOT NULL DEFAULT 0,
-                    is_active INTEGER NOT NULL DEFAULT 1
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    show_in_receipt INTEGER NOT NULL DEFAULT 1
                 )
                 """)
 
@@ -260,6 +261,13 @@ def create_tables():
         ensure_column("plans", "display_context", "TEXT DEFAULT 'all'")
         ensure_column("plans", "is_archived", "INTEGER DEFAULT 0")
         ensure_column("plans", "archived_at", "TEXT")
+
+        ensure_column("bank_cards", "show_in_receipt", "INTEGER")
+        cursor.execute("""
+            UPDATE bank_cards
+            SET show_in_receipt = COALESCE(is_active, 0)
+            WHERE show_in_receipt IS NULL
+        """)
 
         ensure_column("users", "last_name", "TEXT")
         ensure_column("users", "message_name", "TEXT")

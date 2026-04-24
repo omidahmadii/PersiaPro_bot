@@ -25,7 +25,12 @@ def get_all_cards():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute(
-        "SELECT id, card_number, owner_name, bank_name, priority, is_active FROM bank_cards ORDER BY priority DESC, id ASC")
+        """
+        SELECT id, card_number, owner_name, bank_name, priority, is_active, COALESCE(show_in_receipt, is_active, 0)
+        FROM bank_cards
+        ORDER BY priority DESC, id ASC
+        """
+    )
     rows = cur.fetchall()
     conn.close()
     return rows
@@ -34,19 +39,28 @@ def get_all_cards():
 def get_card(card_id: int):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    cur.execute("SELECT id, card_number, owner_name, bank_name, priority, is_active FROM bank_cards WHERE id = ?",
-                (card_id,))
+    cur.execute(
+        """
+        SELECT id, card_number, owner_name, bank_name, priority, is_active, COALESCE(show_in_receipt, is_active, 0)
+        FROM bank_cards
+        WHERE id = ?
+        """,
+        (card_id,),
+    )
     row = cur.fetchone()
     conn.close()
     return row
 
 
-def add_card_to_db(card_number, owner_name, bank_name, priority=0, is_active=1):
+def add_card_to_db(card_number, owner_name, bank_name, priority=0, is_active=1, show_in_receipt=1):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO bank_cards (card_number, owner_name, bank_name, priority, is_active) VALUES (?, ?, ?, ?, ?)",
-        (card_number, owner_name, bank_name, priority, is_active)
+        """
+        INSERT INTO bank_cards (card_number, owner_name, bank_name, priority, is_active, show_in_receipt)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (card_number, owner_name, bank_name, priority, is_active, show_in_receipt)
     )
     conn.commit()
     conn.close()
@@ -55,7 +69,7 @@ def add_card_to_db(card_number, owner_name, bank_name, priority=0, is_active=1):
 def update_card_field(card_id, field, value):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    if field not in ("card_number", "owner_name", "bank_name", "priority", "is_active"):
+    if field not in ("card_number", "owner_name", "bank_name", "priority", "is_active", "show_in_receipt"):
         conn.close()
         return False
     cur.execute(f"UPDATE bank_cards SET {field} = ? WHERE id = ?", (value, card_id))
@@ -84,6 +98,16 @@ def is_admin(user_id: int) -> bool:
     return str(user_id) in [str(a) for a in ADMINS]
 
 
+def card_list_label(card) -> str:
+    cid, num, owner, bank, prio, active, receipt = card
+    deposit_icon = "💸✅" if active else "💸🚫"
+    receipt_icon = "🧾✅" if receipt else "🧾🚫"
+    return (
+        f"{deposit_icon} {receipt_icon} {mask_card_number(num)}"
+        f" | {bank or '-'} | {owner or '-'} | اولویت:{prio}"
+    )
+
+
 # --- نمایش لیست کارت‌ها برای Message ---
 @router.message(F.text == "💳 مدیریت کارت‌ها")
 async def manage_cards_entry(msg: Message):
@@ -107,9 +131,9 @@ async def show_cards_list_callback(cb: CallbackQuery):
     cards = get_all_cards()
     keyboard_rows = []
     for c in cards:
-        cid, num, owner, bank, prio, active = c
-        text = f"{'✅' if active else '🚫'} {mask_card_number(num)} | {bank or '-'} | {owner or '-'} | اولویت:{prio}"
-        keyboard_rows.append([InlineKeyboardButton(text=text, callback_data=f"card_select_{cid}")])
+        cid = c[0]
+        text = card_list_label(c)
+        keyboard_rows.append([InlineKeyboardButton(text=text[:64], callback_data=f"card_select_{cid}")])
     keyboard_rows.append([InlineKeyboardButton(text="➕ افزودن کارت جدید", callback_data="card_add")])
     keyboard_rows.append([InlineKeyboardButton(text="🔙 بازگشت به منوی اصلی", callback_data="card_back_main")])
     keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
@@ -121,9 +145,9 @@ async def show_cards_list_message(msg: Message):
     cards = get_all_cards()
     keyboard_rows = []
     for c in cards:
-        cid, num, owner, bank, prio, active = c
-        text = f"{'✅' if active else '🚫'} {mask_card_number(num)} | {bank or '-'} | {owner or '-'} | اولویت:{prio}"
-        keyboard_rows.append([InlineKeyboardButton(text=text, callback_data=f"card_select_{cid}")])
+        cid = c[0]
+        text = card_list_label(c)
+        keyboard_rows.append([InlineKeyboardButton(text=text[:64], callback_data=f"card_select_{cid}")])
     keyboard_rows.append([InlineKeyboardButton(text="➕ افزودن کارت جدید", callback_data="card_add")])
     keyboard_rows.append([InlineKeyboardButton(text="🔙 بازگشت به منوی اصلی", callback_data="card_back_main")])
     keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
@@ -185,21 +209,23 @@ async def card_selected(cb: CallbackQuery, state: FSMContext):
     row = get_card(card_id)
     if not row:
         return await cb.answer("کارت پیدا نشد.", show_alert=True)
-    cid, num, owner, bank, prio, active = row
+    cid, num, owner, bank, prio, active, receipt = row
     caption = (
         f"کارت #{cid}\n"
         f"شماره: {mask_card_number(num)}\n"
         f"صاحب: {owner or '-'}\n"
         f"بانک: {bank or '-'}\n"
         f"اولویت: {prio}\n"
-        f"وضعیت: {'فعال' if active else 'غیرفعال'}"
+        f"ارسال برای واریز: {'فعال' if active else 'غیرفعال'}\n"
+        f"نمایش در ثبت فیش: {'فعال' if receipt else 'غیرفعال'}"
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ شماره", callback_data=f"card_edit_card_number_{cid}")],
         [InlineKeyboardButton(text="👤 مالک", callback_data=f"card_edit_owner_name_{cid}")],
         [InlineKeyboardButton(text="🏦 بانک", callback_data=f"card_edit_bank_name_{cid}")],
         [InlineKeyboardButton(text="🔢 اولویت", callback_data=f"card_edit_priority_{cid}")],
-        [InlineKeyboardButton(text="✅/🚫 فعال/غیرفعال", callback_data=f"card_toggle_{cid}")],
+        [InlineKeyboardButton(text="💸 فعال/غیرفعال برای واریز", callback_data=f"card_toggle_{cid}")],
+        [InlineKeyboardButton(text="🧾 فعال/غیرفعال در ثبت فیش", callback_data=f"card_receipt_toggle_{cid}")],
         [InlineKeyboardButton(text="❌ حذف کارت", callback_data=f"card_delete_{cid}")],
         [InlineKeyboardButton(text="🔙 بازگشت", callback_data="manage_cards")],
     ])
@@ -227,7 +253,22 @@ async def card_toggle(cb: CallbackQuery, state: FSMContext):
         return await cb.answer("کارت پیدا نشد.", show_alert=True)
     new_active = 0 if card[5] else 1
     update_card_field(cid, "is_active", new_active)
-    await cb.message.answer(f"✅ کارت #{cid} {'فعال' if new_active else 'غیرفعال'} شد.")
+    await cb.message.answer(f"✅ کارت #{cid} برای واریز {'فعال' if new_active else 'غیرفعال'} شد.")
+    await state.clear()
+    await show_cards_list_callback(cb)
+
+
+@router.callback_query(CardStates.waiting_for_action, F.data.startswith("card_receipt_toggle_"))
+async def card_receipt_toggle(cb: CallbackQuery, state: FSMContext):
+    if not is_admin(cb.from_user.id):
+        return await cb.answer("دسترسی ندارید.", show_alert=True)
+    cid = int(cb.data.split("_")[3])
+    card = get_card(cid)
+    if not card:
+        return await cb.answer("کارت پیدا نشد.", show_alert=True)
+    new_visible = 0 if card[6] else 1
+    update_card_field(cid, "show_in_receipt", new_visible)
+    await cb.message.answer(f"✅ کارت #{cid} در ثبت فیش {'فعال' if new_visible else 'غیرفعال'} شد.")
     await state.clear()
     await show_cards_list_callback(cb)
 
@@ -256,7 +297,9 @@ async def card_edit_start(cb: CallbackQuery, state: FSMContext):
         "card_number": "شماره کارت",
         "owner_name": "نام صاحب",
         "bank_name": "نام بانک",
-        "priority": "اولویت"
+        "priority": "اولویت",
+        "is_active": "نمایش برای واریز",
+        "show_in_receipt": "نمایش در ثبت فیش",
     }
     if field_name not in field_map:
         return await cb.answer("فیلد نامعتبر.", show_alert=True)
@@ -278,11 +321,11 @@ async def card_receive_new_value(msg: Message, state: FSMContext):
         await msg.answer("خطای وضعیت. دوباره تلاش کنید.")
         return await state.clear()
     value_text = msg.text.strip()
-    if field == "priority":
+    if field in {"priority", "is_active", "show_in_receipt"}:
         try:
             value = int(value_text)
         except:
-            return await msg.answer("اولویت باید عدد باشد.")
+            return await msg.answer("این مقدار باید عدد باشد.")
     else:
         value = value_text
     if update_card_field(cid, field, value):
@@ -306,11 +349,11 @@ async def quick_edit_cmd(msg: Message):
     except:
         return await msg.reply("id نامعتبر.")
     field, value = parts[2], parts[3]
-    if field == "priority":
+    if field in {"priority", "is_active", "show_in_receipt"}:
         try:
             value = int(value)
         except:
-            return await msg.reply("priority باید عدد باشد.")
+            return await msg.reply("این فیلد باید عدد باشد.")
     if update_card_field(cid, field, value):
         await msg.reply("✅ بروزرسانی انجام شد.")
     else:
