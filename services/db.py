@@ -2728,7 +2728,106 @@ def count_orders_by_user_id_and_username(user_id: int, username: str) -> int:
         return row[0] if row else 0
 
 
-def transfer_orders_by_username_to_another_user(from_user_id: int, to_user_id: int, username: str):
+def search_accounts_for_admin_transfer(keyword: str, limit: int = 20) -> List[Dict]:
+    clean = (keyword or "").strip()
+    if not clean:
+        return []
+
+    like_value = f"%{clean}%"
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                MAX(o.id) AS representative_order_id,
+                o.user_id,
+                o.username,
+                COUNT(*) AS total_orders,
+                MAX(COALESCE(o.expires_at, '')) AS latest_expires_at,
+                u.first_name,
+                u.last_name,
+                u.username AS telegram_username
+            FROM orders o
+            LEFT JOIN users u ON u.id = o.user_id
+            WHERE o.username IS NOT NULL
+              AND TRIM(CAST(o.username AS TEXT)) != ''
+              AND COALESCE(o.status, '') NOT IN ('archived', 'renewed', 'converted')
+              AND (
+                     CAST(o.id AS TEXT) = ?
+                  OR CAST(o.user_id AS TEXT) = ?
+                  OR LOWER(COALESCE(o.username, '')) LIKE LOWER(?)
+                  OR LOWER(COALESCE(u.username, '')) LIKE LOWER(?)
+                  OR LOWER(COALESCE(u.first_name, '')) LIKE LOWER(?)
+                  OR LOWER(COALESCE(u.last_name, '')) LIKE LOWER(?)
+              )
+            GROUP BY o.user_id, o.username
+            ORDER BY MAX(o.id) DESC
+            LIMIT ?
+        """, (clean, clean, like_value, like_value, like_value, like_value, int(limit)))
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def get_admin_transfer_account_preview(representative_order_id: int) -> Optional[Dict]:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT user_id, username
+            FROM orders
+            WHERE id = ?
+            LIMIT 1
+        """, (representative_order_id,))
+        base = cursor.fetchone()
+        if not base:
+            return None
+
+        cursor.execute("""
+            SELECT
+                MAX(o.id) AS representative_order_id,
+                o.user_id,
+                o.username,
+                COUNT(*) AS total_orders,
+                MAX(COALESCE(o.expires_at, '')) AS latest_expires_at,
+                (
+                    SELECT status
+                    FROM orders os
+                    WHERE os.user_id = o.user_id
+                      AND os.username = o.username
+                      AND COALESCE(os.status, '') NOT IN ('archived', 'renewed', 'converted')
+                    ORDER BY os.id DESC
+                    LIMIT 1
+                ) AS latest_status,
+                (
+                    SELECT p.name
+                    FROM orders op
+                    LEFT JOIN plans p ON p.id = op.plan_id
+                    WHERE op.user_id = o.user_id
+                      AND op.username = o.username
+                      AND COALESCE(op.status, '') NOT IN ('archived', 'renewed', 'converted')
+                    ORDER BY op.id DESC
+                    LIMIT 1
+                ) AS latest_plan_name,
+                u.first_name,
+                u.last_name,
+                u.username AS telegram_username
+            FROM orders o
+            LEFT JOIN users u ON u.id = o.user_id
+            WHERE o.user_id = ?
+              AND o.username = ?
+              AND COALESCE(o.status, '') NOT IN ('archived', 'renewed', 'converted')
+            GROUP BY o.user_id, o.username
+            LIMIT 1
+        """, (base["user_id"], base["username"]))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
+def transfer_orders_by_username_to_another_user(
+    from_user_id: int,
+    to_user_id: int,
+    username: str,
+    transferred_by: Optional[int] = None,
+):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
 
@@ -2759,7 +2858,7 @@ def transfer_orders_by_username_to_another_user(from_user_id: int, to_user_id: i
                 total_orders
             )
             VALUES (?, ?, ?, ?, ?, ?)
-        """, (from_user_id, to_user_id, username, from_user_id, _now_text(), total_orders))
+        """, (from_user_id, to_user_id, username, transferred_by or from_user_id, _now_text(), total_orders))
 
         conn.commit()
         return True, None, total_orders
