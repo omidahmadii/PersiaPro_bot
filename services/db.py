@@ -1,4 +1,5 @@
 import sqlite3
+import zlib
 from datetime import datetime
 from typing import Optional, List, Dict
 
@@ -9,6 +10,12 @@ from config import DB_PATH
 
 def _now_text(timespec: str = "minutes") -> str:
     return datetime.now().isoformat(sep=" ", timespec=timespec)
+
+
+OFFLINE_USER_ROLE = "offline"
+MANUAL_SERVICE_SOURCE = "manual_import"
+OFFLINE_MANUAL_SERVICE_SOURCE = "offline_manual"
+OPEN_ORDER_STATUSES_EXCLUDED = ("canceled", "renewed", "archived", "converted")
 
 
 def create_tables():
@@ -560,7 +567,7 @@ def get_all_plans():
         return [dict(row) for row in cursor.fetchall()]
 
 
-def get_plans_for_admin(include_archived: bool = False):
+def get_plans_for_admin(include_archived: Optional[bool] = False):
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -585,9 +592,9 @@ def get_plans_for_admin(include_archived: bool = False):
             FROM plans
         """
         params: list = []
-        if include_archived:
+        if include_archived is True:
             query += "\nWHERE COALESCE(is_archived, 0) = 1"
-        else:
+        elif include_archived is False:
             query += "\nWHERE COALESCE(is_archived, 0) = 0"
         query += "\nORDER BY id ASC"
         cursor.execute(query, params)
@@ -906,7 +913,7 @@ def update_plan_display_context(plan_id: int, display_context: str):
         conn.commit()
 
 
-def resolve_user_identifiers(identifiers: List[str]):
+def resolve_user_identifiers(identifiers: List[str], include_offline: bool = True):
     resolved: List[Dict] = []
     missing: List[str] = []
     seen_user_ids = set()
@@ -922,21 +929,31 @@ def resolve_user_identifiers(identifiers: List[str]):
 
             row = None
             if token.lstrip("-").isdigit():
-                cursor.execute("""
+                query = """
                     SELECT id, first_name, last_name, username, role
                     FROM users
                     WHERE id = ?
-                    LIMIT 1
-                """, (int(token),))
+                """
+                params = [int(token)]
+                if not include_offline:
+                    query += "\nAND id > 0 AND COALESCE(role, '') != ?"
+                    params.append(OFFLINE_USER_ROLE)
+                query += "\nLIMIT 1"
+                cursor.execute(query, params)
                 row = cursor.fetchone()
             else:
                 username = token.lstrip("@")
-                cursor.execute("""
+                query = """
                     SELECT id, first_name, last_name, username, role
                     FROM users
                     WHERE LOWER(username) = LOWER(?)
-                    LIMIT 1
-                """, (username,))
+                """
+                params = [username]
+                if not include_offline:
+                    query += "\nAND id > 0 AND COALESCE(role, '') != ?"
+                    params.append(OFFLINE_USER_ROLE)
+                query += "\nLIMIT 1"
+                cursor.execute(query, params)
                 row = cursor.fetchone()
 
             if row is None:
@@ -953,6 +970,49 @@ def resolve_user_identifiers(identifiers: List[str]):
     return resolved, missing
 
 
+def search_users_for_admin(keyword: str, limit: int = 10, include_offline: bool = True) -> List[Dict]:
+    clean = (keyword or "").strip()
+    if not clean:
+        return []
+
+    like_value = f"%{clean.lstrip('@')}%"
+    offline_filter = "" if include_offline else "AND u.id > 0 AND COALESCE(u.role, '') != ?"
+    params: list = [clean.lstrip("@"), like_value, like_value, like_value, like_value]
+    if not include_offline:
+        params.append(OFFLINE_USER_ROLE)
+    params.append(int(limit))
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            f"""
+            SELECT
+                u.id,
+                u.first_name,
+                u.last_name,
+                u.username,
+                u.role,
+                COALESCE(u.balance, 0) AS balance
+            FROM users u
+            WHERE (
+                   CAST(u.id AS TEXT) = ?
+                OR CAST(u.id AS TEXT) LIKE ?
+                OR LOWER(COALESCE(u.first_name, '')) LIKE LOWER(?)
+                OR LOWER(COALESCE(u.last_name, '')) LIKE LOWER(?)
+                OR LOWER(COALESCE(u.username, '')) LIKE LOWER(?)
+            )
+            {offline_filter}
+            ORDER BY
+                CASE WHEN u.id > 0 THEN 0 ELSE 1 END,
+                u.id ASC
+            LIMIT ?
+            """,
+            params,
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+
 def get_all_user_ids_for_messaging() -> List[int]:
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
@@ -960,8 +1020,11 @@ def get_all_user_ids_for_messaging() -> List[int]:
             """
             SELECT id
             FROM users
+            WHERE id > 0
+              AND COALESCE(role, '') != ?
             ORDER BY id ASC
-            """
+            """,
+            (OFFLINE_USER_ROLE,),
         )
         return [int(row[0]) for row in cursor.fetchall()]
 
@@ -974,9 +1037,11 @@ def get_user_ids_by_min_balance(min_balance: int) -> List[int]:
             SELECT id
             FROM users
             WHERE COALESCE(balance, 0) >= ?
+              AND id > 0
+              AND COALESCE(role, '') != ?
             ORDER BY COALESCE(balance, 0) DESC, id ASC
             """,
-            (int(min_balance),),
+            (int(min_balance), OFFLINE_USER_ROLE),
         )
         return [int(row[0]) for row in cursor.fetchall()]
 
@@ -995,21 +1060,27 @@ def get_user_ids_by_segment_ids(segment_ids: List[int], only_active_segments: bo
                 SELECT DISTINCT su.user_id
                 FROM segment_users su
                 JOIN segments s ON s.id = su.segment_id
+                JOIN users u ON u.id = su.user_id
                 WHERE su.segment_id IN ({placeholders})
                   AND COALESCE(s.is_active, 1) = 1
+                  AND su.user_id > 0
+                  AND COALESCE(u.role, '') != ?
                 ORDER BY su.user_id ASC
                 """,
-                cleaned_ids,
+                [*cleaned_ids, OFFLINE_USER_ROLE],
             )
         else:
             cursor.execute(
                 f"""
                 SELECT DISTINCT su.user_id
                 FROM segment_users su
+                JOIN users u ON u.id = su.user_id
                 WHERE su.segment_id IN ({placeholders})
+                  AND su.user_id > 0
+                  AND COALESCE(u.role, '') != ?
                 ORDER BY su.user_id ASC
                 """,
-                cleaned_ids,
+                [*cleaned_ids, OFFLINE_USER_ROLE],
             )
         return [int(row[0]) for row in cursor.fetchall()]
 
@@ -1455,7 +1526,10 @@ def get_active_orders():
             SELECT o.id, o.user_id, o.username, o.expires_at, u.first_name
             FROM orders o
             JOIN users u ON o.user_id = u.id
-            WHERE o.status = 'active' AND o.expires_at IS NOT NULL
+            WHERE o.status = 'active'
+              AND o.expires_at IS NOT NULL
+              AND o.user_id > 0
+              AND COALESCE(u.role, '') != 'offline'
         """)
         return cursor.fetchall()
 
@@ -1744,18 +1818,21 @@ def get_orders_for_notifications(expires_at):
         cursor = conn.cursor()
         cursor.execute("""
                 SELECT
-                    id,
-                    user_id,
-                    plan_id,
-                    username,
-                    expires_at,
-                    status,
-                    last_notif_level,
-                    last_renewal_offer_notification_at
-            FROM orders
-            WHERE status IN ('active', 'waiting_for_renewal', 'waiting_for_renewal_not_paid')
-            AND expires_at IS NOT NULL
-            AND expires_at <= ?
+                    o.id,
+                    o.user_id,
+                    o.plan_id,
+                    o.username,
+                    o.expires_at,
+                    o.status,
+                    o.last_notif_level,
+                    o.last_renewal_offer_notification_at
+            FROM orders o
+            JOIN users u ON u.id = o.user_id
+            WHERE o.status IN ('active', 'waiting_for_renewal', 'waiting_for_renewal_not_paid')
+            AND o.expires_at IS NOT NULL
+            AND o.expires_at <= ?
+            AND o.user_id > 0
+            AND COALESCE(u.role, '') != 'offline'
             """, (expires_at,))
         return [dict(r) for r in cursor.fetchall()]
 
@@ -1813,6 +1890,8 @@ def get_orders_for_usage_notifications():
             LEFT JOIN users u ON u.id = o.user_id
             WHERE o.status IN ('active', 'waiting_for_renewal', 'waiting_for_renewal_not_paid')
               AND o.user_id IS NOT NULL
+              AND o.user_id > 0
+              AND COALESCE(u.role, '') != 'offline'
               AND o.username IS NOT NULL
               AND COALESCE(p.is_unlimited, 0) = 0
               AND (COALESCE(o.volume_gb, 0) + COALESCE(o.extra_volume_gb, 0)) > 0
@@ -1863,6 +1942,194 @@ def ensure_user_exists(user_id: int):
         cursor = conn.cursor()
         cursor.execute("SELECT 1 FROM users WHERE id = ?", (user_id,))
         return cursor.fetchone()
+
+
+def _normalize_account_username(account_username: str) -> str:
+    return str(account_username or "").strip().lstrip("@")
+
+
+def _offline_user_id_from_account(account_username: str) -> int:
+    username = _normalize_account_username(account_username)
+    if username.isdigit():
+        value = int(username)
+        if value > 0:
+            return -value
+
+    checksum = zlib.crc32(username.encode("utf-8")) & 0xFFFFFFFF
+    return -(1_000_000_000 + (checksum % 1_000_000_000))
+
+
+def ensure_offline_user_for_account(account_username: str, display_name: Optional[str] = None) -> Dict:
+    username = _normalize_account_username(account_username)
+    if not username:
+        return {"ok": False, "error": "invalid_account_username"}
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        existing_for_username = cursor.execute(
+            """
+            SELECT *
+            FROM users
+            WHERE COALESCE(role, '') = ?
+              AND username = ?
+            LIMIT 1
+            """,
+            (OFFLINE_USER_ROLE, username),
+        ).fetchone()
+        if existing_for_username:
+            return {"ok": True, "created": False, "user": dict(existing_for_username)}
+
+        candidate_id = _offline_user_id_from_account(username)
+        while True:
+            existing_id = cursor.execute(
+                "SELECT * FROM users WHERE id = ? LIMIT 1",
+                (candidate_id,),
+            ).fetchone()
+            if existing_id is None:
+                break
+            if existing_id["role"] == OFFLINE_USER_ROLE and existing_id["username"] == username:
+                return {"ok": True, "created": False, "user": dict(existing_id)}
+            candidate_id -= 1
+
+        now_text = _now_text()
+        first_name = (display_name or "").strip() or f"Offline {username}"
+        cursor.execute(
+            """
+            INSERT INTO users (id, first_name, username, role, created_at, balance, membership_status)
+            VALUES (?, ?, ?, ?, ?, 0, 'not_member')
+            """,
+            (candidate_id, first_name, username, OFFLINE_USER_ROLE, now_text),
+        )
+        conn.commit()
+
+        user = cursor.execute(
+            "SELECT * FROM users WHERE id = ? LIMIT 1",
+            (candidate_id,),
+        ).fetchone()
+        return {"ok": True, "created": True, "user": dict(user)}
+
+
+def create_manual_service_order(
+    user_id: int,
+    plan_id: int,
+    account_username: str,
+    password: str,
+    admin_id: Optional[int] = None,
+    service_source: str = MANUAL_SERVICE_SOURCE,
+) -> Dict:
+    username = _normalize_account_username(account_username)
+    password = str(password or "").strip()
+    service_source = (service_source or MANUAL_SERVICE_SOURCE).strip() or MANUAL_SERVICE_SOURCE
+
+    if not username:
+        return {"ok": False, "error": "invalid_account_username"}
+    if not password:
+        return {"ok": False, "error": "invalid_password"}
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        user = cursor.execute(
+            "SELECT * FROM users WHERE id = ? LIMIT 1",
+            (int(user_id),),
+        ).fetchone()
+        if not user:
+            return {"ok": False, "error": "user_not_found"}
+
+        plan = cursor.execute(
+            """
+            SELECT *
+            FROM plans
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (int(plan_id),),
+        ).fetchone()
+        if not plan:
+            return {"ok": False, "error": "plan_not_found"}
+
+        open_orders = cursor.execute(
+            f"""
+            SELECT id, user_id, username, status
+            FROM orders
+            WHERE username = ?
+              AND status NOT IN ({", ".join("?" for _ in OPEN_ORDER_STATUSES_EXCLUDED)})
+            ORDER BY id DESC
+            """,
+            (username, *OPEN_ORDER_STATUSES_EXCLUDED),
+        ).fetchall()
+        if open_orders:
+            return {
+                "ok": False,
+                "error": "account_has_open_order",
+                "open_orders": [dict(row) for row in open_orders],
+            }
+
+        account = cursor.execute(
+            "SELECT * FROM accounts WHERE username = ? LIMIT 1",
+            (username,),
+        ).fetchone()
+
+        now_text = _now_text()
+        price = int(plan["price"] or 0)
+        volume_gb = int(plan["volume_gb"] or 0)
+        cursor.execute(
+            """
+            INSERT INTO orders (
+                user_id,
+                plan_id,
+                username,
+                price,
+                created_at,
+                status,
+                volume_gb,
+                service_source
+            )
+            VALUES (?, ?, ?, ?, ?, 'active', ?, ?)
+            """,
+            (int(user_id), int(plan_id), username, price, now_text, volume_gb, service_source),
+        )
+        order_id = cursor.lastrowid
+
+        comment = f"Manual import by admin {admin_id}" if admin_id else "Manual import"
+        if account:
+            cursor.execute(
+                """
+                UPDATE accounts
+                SET password = ?,
+                    status = 'assigned',
+                    plan_id = ?,
+                    order_id = ?,
+                    comment = ?
+                WHERE id = ?
+                """,
+                (password, int(plan_id), order_id, comment, int(account["id"])),
+            )
+            account_created = False
+        else:
+            cursor.execute(
+                """
+                INSERT INTO accounts (username, password, status, plan_id, order_id, comment)
+                VALUES (?, ?, 'assigned', ?, ?, ?)
+                """,
+                (username, password, int(plan_id), order_id, comment),
+            )
+            account_created = True
+
+        conn.commit()
+
+        return {
+            "ok": True,
+            "order_id": order_id,
+            "account_username": username,
+            "account_created": account_created,
+            "user": dict(user),
+            "plan": dict(plan),
+            "service_source": service_source,
+        }
 
 
 def insert_feedback(user_id, feedback_type, message, created_at):
@@ -2323,10 +2590,13 @@ def get_auto_renew_orders():
         now = jdatetime.datetime.now()
         one_day_later = now + jdatetime.timedelta(days=1)
         cursor.execute("""
-                SELECT * FROM orders
-                WHERE auto_renew = 1
-                AND status IN ('active','expired')
-                AND expires_at <= ?
+                SELECT o.* FROM orders o
+                JOIN users u ON u.id = o.user_id
+                WHERE o.auto_renew = 1
+                AND o.status IN ('active','expired')
+                AND o.expires_at <= ?
+                AND o.user_id > 0
+                AND COALESCE(u.role, '') != 'offline'
             """, (one_day_later.strftime("%Y-%m-%d %H:%M:%S"),))
 
         rows = cursor.fetchall()

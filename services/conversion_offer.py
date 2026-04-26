@@ -721,7 +721,10 @@ def send_conversion_offer_notifications() -> None:
                 COALESCE(p.is_archived, 0) AS plan_is_archived
             FROM orders o
             JOIN plans p ON p.id = o.plan_id
+            JOIN users u ON u.id = o.user_id
             WHERE o.status = 'active'
+              AND o.user_id > 0
+              AND COALESCE(u.role, '') != 'offline'
             ORDER BY o.user_id ASC, o.id ASC
             """
         )

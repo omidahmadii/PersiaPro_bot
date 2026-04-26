@@ -60,6 +60,8 @@ def _is_order_expired(order: dict) -> bool:
 
 
 def _send_notification(user_id: int, text: str) -> None:
+    if int(user_id or 0) <= 0:
+        return
     send_scheduler_notification(chat_id=user_id, text=text, parse_mode="HTML", timeout=15)
 
 

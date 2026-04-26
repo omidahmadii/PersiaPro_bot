@@ -157,6 +157,7 @@ def build_order_caption(order: dict) -> str:
         f"🕒 ثبت سفارش: {order.get('created_at') or '-'}\n"
         f"🚀 شروع: {order.get('starts_at') or '-'}\n"
         f"⏳ پایان: {order.get('expires_at') or '-'}\n"
+        f"🧩 منبع ثبت: {order.get('service_source') or '-'}\n"
         f"🔁 نوع: {'تمدید' if order.get('is_renewal_of_order') else 'خرید'}"
     )
 
@@ -402,7 +403,7 @@ async def order_management_cancel_confirm(callback: CallbackQuery, state: FSMCon
     )
 
     order = get_order_with_plan(order_id)
-    if order and order.get("user_id"):
+    if order and int(order.get("user_id") or 0) > 0:
         await bot.send_message(
             int(order["user_id"]),
             f"❌ سفارش سرویس <code>{order.get('username') or '-'}</code> توسط ادمین لغو شد.",
@@ -484,7 +485,7 @@ async def order_management_plan_apply(callback: CallbackQuery, state: FSMContext
     )
 
     order = get_order_with_plan(int(order_id))
-    if order and order.get("user_id"):
+    if order and int(order.get("user_id") or 0) > 0:
         user_lines = [
             f"🛠 پلن سرویس <code>{order.get('username') or '-'}</code> توسط ادمین اصلاح شد.",
             f"پلن جدید: {result['new_plan_name'] or '-'}",
@@ -582,7 +583,7 @@ async def order_management_receive_volume(message: Message, state: FSMContext, b
     )
 
     order = get_order_with_plan(int(order_id))
-    if order and order.get("user_id"):
+    if order and int(order.get("user_id") or 0) > 0:
         await bot.send_message(
             int(order["user_id"]),
             user_text,

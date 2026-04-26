@@ -83,6 +83,9 @@ def _is_previous_order_expired(order: dict) -> bool:
 
 
 def _notify_user_activation(reserved_order: dict, duration_months: int) -> None:
+    if int(reserved_order.get("user_id") or 0) <= 0:
+        return
+
     plan_name = reserved_order.get("plan_name", "سرویس شما")
     username = reserved_order["username"]
     volume_gb = reserved_order.get("volume_gb")   # حجم سرویس

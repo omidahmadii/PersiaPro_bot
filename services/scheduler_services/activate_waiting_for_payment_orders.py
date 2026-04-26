@@ -84,6 +84,8 @@ def format_price(amount: Union[int, float]) -> str:
 
 
 def _send_notification(user_id: int, msg: str) -> None:
+    if int(user_id or 0) <= 0:
+        return
     send_scheduler_notification(chat_id=user_id, text=msg, parse_mode="HTML", timeout=15)
 
 

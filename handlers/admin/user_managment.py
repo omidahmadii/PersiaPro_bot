@@ -48,14 +48,14 @@ def get_users(offset: int = 0, limit: int = PAGE_SIZE) -> List[Tuple]:
         cur.execute("""
             SELECT id, first_name, last_name, username, role, balance
             FROM users
-            ORDER BY id ASC
+            ORDER BY CASE WHEN id > 0 THEN 0 ELSE 1 END, id ASC
             LIMIT ? OFFSET ?
         """, (limit, offset))
     else:
         cur.execute("""
             SELECT id, first_name, '' as last_name, username, role, balance
             FROM users
-            ORDER BY id ASC
+            ORDER BY CASE WHEN id > 0 THEN 0 ELSE 1 END, id ASC
             LIMIT ? OFFSET ?
         """, (limit, offset))
     rows = cur.fetchall()
@@ -137,7 +137,7 @@ def update_user_field(user_id: int, field: str, value) -> bool:
 
 
 def update_user_role(user_id: int, role_value: str) -> bool:
-    if role_value not in ("admin", "user", "agent"):
+    if role_value not in ("admin", "user", "agent", "offline"):
         return False
     return update_user_field(user_id, "role", role_value)
 
@@ -458,6 +458,7 @@ async def user_role_menu(cb: CallbackQuery):
         [InlineKeyboardButton(text="🔐 ادمین", callback_data=f"user_role_set:{uid}:admin")],
         [InlineKeyboardButton(text="👤 یوزر", callback_data=f"user_role_set:{uid}:user")],
         [InlineKeyboardButton(text="🤝 نماینده", callback_data=f"user_role_set:{uid}:agent")],
+        [InlineKeyboardButton(text="📴 خارج از ربات", callback_data=f"user_role_set:{uid}:offline")],
         [InlineKeyboardButton(text="🔙 بازگشت", callback_data="user_page:0")]
     ])
     await cb.message.answer("🎯 نقش جدید را انتخاب کنید:", reply_markup=kb)
@@ -473,7 +474,7 @@ async def user_role_set(cb: CallbackQuery):
         return await cb.answer("دیتای نامعتبر.", show_alert=True)
     uid = int(parts[1])
     new_role = parts[2]
-    if new_role not in ("admin", "user", "agent"):
+    if new_role not in ("admin", "user", "agent", "offline"):
         return await cb.answer("نقش نامعتبر.", show_alert=True)
     ok = update_user_role(uid, new_role)
     if ok:
@@ -510,14 +511,14 @@ async def quick_set_role(msg: Message):
         return await msg.reply("دسترسی نداری 😅")
     parts = msg.text.split()
     if len(parts) < 3:
-        return await msg.reply("فرمت: /set_user_role <id> <admin|user|agent>")
+        return await msg.reply("فرمت: /set_user_role <id> <admin|user|agent|offline>")
     try:
         uid = int(parts[1])
     except Exception:
         return await msg.reply("id نامعتبر.")
     rolev = parts[2].lower()
-    if rolev not in ("admin", "user", "agent"):
-        return await msg.reply("نقش نامعتبر. از admin|user|agent استفاده کن.")
+    if rolev not in ("admin", "user", "agent", "offline"):
+        return await msg.reply("نقش نامعتبر. از admin|user|agent|offline استفاده کن.")
     ok = update_user_role(uid, rolev)
     if ok:
         await msg.reply("✅ نقش بروزرسانی شد.")

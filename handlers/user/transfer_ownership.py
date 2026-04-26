@@ -181,7 +181,7 @@ async def receive_target_user_id(message: Message, state: FSMContext):
         return
 
     target_user = get_user_by_id(to_user_id)
-    if not target_user:
+    if not target_user or int(target_user.get("id") or 0) <= 0 or target_user.get("role") == "offline":
         await message.answer(
             "کاربری با این آیدی عددی در سیستم پیدا نشد.\n"
             "لطفا آیدی صحیح را وارد کنید."

@@ -326,10 +326,11 @@ def limit_speed():
                 expires_at=expires_at,
             )
 
-            try:
-                send_notification(user_id=user_id, text=user_text)
-            except Exception as exc:
-                print(f"[!] failed to notify user {user_id}: {exc}")
+            if int(user_id or 0) > 0:
+                try:
+                    send_notification(user_id=user_id, text=user_text)
+                except Exception as exc:
+                    print(f"[!] failed to notify user {user_id}: {exc}")
 
             for admin in ADMINS:
                 try:
@@ -369,10 +370,11 @@ def limit_speed():
                 expires_at=expires_at,
             )
 
-            try:
-                send_notification(user_id=user_id, text=user_text)
-            except Exception as exc:
-                print(f"[!] failed to notify user {user_id}: {exc}")
+            if int(user_id or 0) > 0:
+                try:
+                    send_notification(user_id=user_id, text=user_text)
+                except Exception as exc:
+                    print(f"[!] failed to notify user {user_id}: {exc}")
 
             for admin in ADMINS:
                 try:

@@ -6,7 +6,7 @@ from aiogram import Dispatcher
 
 from handlers.admin import verify_transactions, temporary_charge, cards_managment, user_managment, plan_managment, \
     plan_audience, reports, exec_commands, runtime_settings, accounting_transactions, user_messaging, \
-    order_management, volume_package_management
+    order_management, volume_package_management, manual_service
 from handlers.shared import change_password, activate_stored
 from handlers.user import placeholder, feedback, get_cards, other_features, start, buy_service, my_services, account, \
     tutorial, contact_support, payment, renew_service, extra_volume, conversion_offer, \
@@ -49,6 +49,7 @@ async def main():
         user_messaging.router,
         user_managment.router,
         plan_managment.router,
+        manual_service.router,
         order_management.router,
         volume_package_management.router,
         plan_audience.router,

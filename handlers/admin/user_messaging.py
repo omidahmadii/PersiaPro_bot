@@ -220,7 +220,7 @@ async def messaging_receive_single_user(message: Message, state: FSMContext):
         return
 
     token = (message.text or "").strip()
-    users, missing = resolve_user_identifiers([token])
+    users, missing = resolve_user_identifiers([token], include_offline=False)
     if not users:
         await message.answer(
             f"کاربر پیدا نشد: {token or '-'}\n"
