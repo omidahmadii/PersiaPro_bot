@@ -1,8 +1,10 @@
 # handlers/admin/manage_users.py
 from html import escape
 import sqlite3
+from datetime import datetime
 from typing import Optional, List, Tuple, Dict
 
+import jdatetime
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -58,6 +60,23 @@ TRANSACTION_STATUS_LABELS = {
     "pending": "در انتظار بررسی",
     "approved": "تایید شده",
 }
+
+VISIBLE_USER_TRANSACTION_STATUSES = (
+    "pending",
+    "pending_admin",
+    "approved",
+    "approved_pending_accounting",
+    "accounting_approved",
+)
+
+VISIBLE_USER_ACCOUNT_STATUSES = (
+    "active",
+    "reserved",
+    "waiting_for_payment",
+    "waiting_for_renewal",
+    "waiting_for_renewal_not_paid",
+    "expired",
+)
 
 
 # ----------------------
@@ -224,7 +243,11 @@ def update_any_user_field(user_id: int, field: str, value: str) -> bool:
 def count_user_transactions(user_id: int) -> int:
     conn = _connect()
     cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM transactions WHERE user_id = ?", (user_id,))
+    placeholders = ", ".join("?" for _ in VISIBLE_USER_TRANSACTION_STATUSES)
+    cur.execute(
+        f"SELECT COUNT(*) FROM transactions WHERE user_id = ? AND status IN ({placeholders})",
+        (user_id, *VISIBLE_USER_TRANSACTION_STATUSES),
+    )
     row = cur.fetchone()
     conn.close()
     return int(row[0] or 0) if row else 0
@@ -238,7 +261,7 @@ def get_user_transactions(user_id: int, page: int = 0, limit: int = USER_TXN_PAG
         SELECT
             id,
             user_id,
-            COALESCE(NULLIF(amount_claimed, 0), amount, 0) AS display_amount,
+            COALESCE(NULLIF(amount, 0), NULLIF(amount_claimed, 0), 0) AS display_amount,
             amount,
             amount_claimed,
             status,
@@ -248,9 +271,12 @@ def get_user_transactions(user_id: int, page: int = 0, limit: int = USER_TXN_PAG
             transfer_time
         FROM transactions
         WHERE user_id = ?
+          AND status IN ({placeholders})
         ORDER BY COALESCE(submitted_at, created_at) DESC, id DESC
         LIMIT ? OFFSET ?
-    """, (user_id, int(limit), int(page) * int(limit)))
+    """.format(placeholders=", ".join("?" for _ in VISIBLE_USER_TRANSACTION_STATUSES)),
+        (user_id, *VISIBLE_USER_TRANSACTION_STATUSES, int(limit), int(page) * int(limit)),
+    )
     rows = [dict(row) for row in cur.fetchall()]
     conn.close()
     return rows
@@ -264,8 +290,11 @@ def get_user_transaction_detail(user_id: int, txn_id: int) -> Optional[Dict]:
         SELECT *
         FROM transactions
         WHERE id = ? AND user_id = ?
+          AND status IN ({placeholders})
         LIMIT 1
-    """, (txn_id, user_id))
+    """.format(placeholders=", ".join("?" for _ in VISIBLE_USER_TRANSACTION_STATUSES)),
+        (txn_id, user_id, *VISIBLE_USER_TRANSACTION_STATUSES),
+    )
     row = cur.fetchone()
     conn.close()
     return dict(row) if row else None
@@ -334,6 +363,7 @@ def get_user_accounts(user_id: int, page: int = 0, limit: int = USER_ACCOUNT_PAG
     conn = _connect()
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
+    placeholders = ", ".join("?" for _ in VISIBLE_USER_ACCOUNT_STATUSES)
     cur.execute("""
         SELECT
             username,
@@ -344,6 +374,7 @@ def get_user_accounts(user_id: int, page: int = 0, limit: int = USER_ACCOUNT_PAG
                 SELECT status
                 FROM orders os
                 WHERE os.user_id = o.user_id AND os.username = o.username
+                  AND os.status IN ({placeholders})
                 ORDER BY os.id DESC
                 LIMIT 1
             ) AS latest_status
@@ -351,10 +382,13 @@ def get_user_accounts(user_id: int, page: int = 0, limit: int = USER_ACCOUNT_PAG
         WHERE user_id = ?
           AND username IS NOT NULL
           AND TRIM(CAST(username AS TEXT)) != ''
+          AND status IN ({placeholders})
         GROUP BY username
         ORDER BY MAX(id) DESC
         LIMIT ? OFFSET ?
-    """, (user_id, int(limit), int(page) * int(limit)))
+    """.format(placeholders=placeholders),
+        (*VISIBLE_USER_ACCOUNT_STATUSES, user_id, *VISIBLE_USER_ACCOUNT_STATUSES, int(limit), int(page) * int(limit)),
+    )
     rows = [dict(row) for row in cur.fetchall()]
     conn.close()
     return rows
@@ -363,6 +397,7 @@ def get_user_accounts(user_id: int, page: int = 0, limit: int = USER_ACCOUNT_PAG
 def count_user_accounts(user_id: int) -> int:
     conn = _connect()
     cur = conn.cursor()
+    placeholders = ", ".join("?" for _ in VISIBLE_USER_ACCOUNT_STATUSES)
     cur.execute("""
         SELECT COUNT(*)
         FROM (
@@ -371,9 +406,10 @@ def count_user_accounts(user_id: int) -> int:
             WHERE user_id = ?
               AND username IS NOT NULL
               AND TRIM(CAST(username AS TEXT)) != ''
+              AND status IN ({placeholders})
             GROUP BY username
         )
-    """, (user_id,))
+    """.format(placeholders=placeholders), (user_id, *VISIBLE_USER_ACCOUNT_STATUSES))
     row = cur.fetchone()
     conn.close()
     return int(row[0] or 0) if row else 0
@@ -477,6 +513,26 @@ def format_price(amount) -> str:
         return str(amount or 0)
 
 
+def format_jalali_datetime(value: Optional[str]) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "-"
+
+    normalized = raw.replace("T", " ")[:19]
+    candidates = (
+        (normalized, "%Y-%m-%d %H:%M:%S"),
+        (normalized[:16], "%Y-%m-%d %H:%M"),
+        (normalized[:10], "%Y-%m-%d"),
+    )
+    for candidate, fmt in candidates:
+        try:
+            parsed = datetime.strptime(candidate, fmt)
+            return jdatetime.datetime.fromgregorian(datetime=parsed).strftime("%Y/%m/%d %H:%M")
+        except Exception:
+            continue
+    return raw
+
+
 def order_status_label(status: Optional[str]) -> str:
     return ORDER_STATUS_LABELS.get(str(status or "").strip(), str(status or "-"))
 
@@ -542,7 +598,7 @@ def paged_back_keyboard(prefix: str, user_id: int, page: int, total: int, page_s
 def transactions_keyboard(user_id: int, rows_data: List[Dict], page: int, total: int) -> InlineKeyboardMarkup:
     rows = []
     for txn in rows_data:
-        date_text = txn.get("submitted_at") or txn.get("created_at") or "-"
+        date_text = format_jalali_datetime(txn.get("submitted_at") or txn.get("created_at"))
         button_text = f"#{txn['id']} | {format_price(txn.get('display_amount'))} | {date_text}"
         rows.append([InlineKeyboardButton(text=button_text[:64], callback_data=f"user_txn_detail:{user_id}:{txn['id']}:{page}")])
     nav = []
@@ -800,14 +856,14 @@ async def user_transaction_detail(cb: CallbackQuery):
     txn = get_user_transaction_detail(uid, txn_id)
     if not txn:
         return await cb.answer("تراکنش پیدا نشد.", show_alert=True)
-    amount_display = txn.get("amount_claimed") or txn.get("amount") or 0
+    amount_display = txn.get("amount") or txn.get("amount_claimed") or 0
     text = (
         f"🧾 <b>جزئیات تراکنش #{txn['id']}</b>\n\n"
         f"👤 کاربر: <code>{uid}</code>\n"
         f"💰 مبلغ: <b>{format_price(amount_display)} تومان</b>\n"
         f"📍 وضعیت: {escape(transaction_status_label(txn.get('status')))}\n"
-        f"🕒 ثبت: <code>{escape(str(txn.get('created_at') or '-'))}</code>\n"
-        f"📨 ارسال: <code>{escape(str(txn.get('submitted_at') or '-'))}</code>\n"
+        f"🕒 ثبت: <code>{escape(format_jalali_datetime(txn.get('created_at')))}</code>\n"
+        f"📨 ارسال: <code>{escape(format_jalali_datetime(txn.get('submitted_at')))}</code>\n"
         f"📅 زمان واریز: <code>{escape(str(txn.get('transfer_date') or '-'))} {escape(str(txn.get('transfer_time') or '-'))}</code>\n"
         f"🏦 کارت مقصد: <code>{escape(str(txn.get('destination_card_number') or '-'))}</code>\n"
         f"🏷 صاحب/بانک مقصد: {escape(str(txn.get('destination_card_owner') or '-'))} | {escape(str(txn.get('destination_bank_name') or '-'))}\n"

@@ -28,6 +28,7 @@ from services.db import (
     get_services_for_renew,
     insert_renewed_order,
     update_order_status,
+    cancel_unpaid_order,
     get_active_locations_by_category,
     get_order_status,
     update_last_name,
@@ -879,7 +880,7 @@ async def cancel_pending_renewal(callback: CallbackQuery, state: FSMContext):
 
     restored_status = "expired" if is_service_expired_now(base_service) else "active"
     update_order_status(order_id=base_service["id"], new_status=restored_status)
-    update_order_status(order_id=pending_order["id"], new_status="canceled")
+    cancel_unpaid_order(order_id=pending_order["id"])
 
     await state.clear()
     await callback.message.edit_text(

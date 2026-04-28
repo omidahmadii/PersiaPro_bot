@@ -214,11 +214,27 @@ def cancel_order(order_id: int, admin_id: Optional[int] = None, note: Optional[s
             )
 
         for child in children:
-            cur.execute("UPDATE orders SET status = 'canceled' WHERE id = ?", (child["id"],))
+            cur.execute(
+                """
+                UPDATE orders
+                SET status = 'canceled',
+                    price = CASE WHEN status = 'waiting_for_payment' THEN 0 ELSE price END
+                WHERE id = ?
+                """,
+                (child["id"],),
+            )
             affected_order_ids.add(int(child["id"]))
             canceled_children += 1
 
-        cur.execute("UPDATE orders SET status = 'canceled' WHERE id = ?", (order_id,))
+        cur.execute(
+            """
+            UPDATE orders
+            SET status = 'canceled',
+                price = CASE WHEN status = 'waiting_for_payment' THEN 0 ELSE price END
+            WHERE id = ?
+            """,
+            (order_id,),
+        )
 
         if order["status"] in LIVE_ORDER_STATUSES:
             should_release_account = True

@@ -29,7 +29,7 @@ from services.db import (
     get_user_pending_purchase_orders,
     get_order_data,
     release_account_by_username,
-    update_order_status,
+    cancel_unpaid_order,
 )
 from services.runtime_settings import get_access_mode_setting, get_bool_setting, get_text_setting
 from services.payment_workflow import format_card_number_for_display
@@ -798,7 +798,7 @@ async def cancel_pending_purchase(callback: CallbackQuery, state: FSMContext):
         return await callback.answer("این سفارش دیگر قابل لغو نیست.", show_alert=True)
 
     release_account_by_username(str(order["username"]))
-    update_order_status(order_id=order["id"], new_status="canceled")
+    cancel_unpaid_order(order_id=order["id"])
     await state.clear()
 
     remaining_orders = get_user_pending_purchase_orders(callback.from_user.id)

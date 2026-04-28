@@ -1330,6 +1330,18 @@ def update_order_status(order_id: int, new_status: str):
         conn.commit()
 
 
+def cancel_unpaid_order(order_id: int):
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE orders
+            SET status = 'canceled',
+                price = 0
+            WHERE id = ?
+        """, (order_id,))
+        conn.commit()
+
+
 def update_order_conversion_markers(order_id: int, enabled: bool):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()

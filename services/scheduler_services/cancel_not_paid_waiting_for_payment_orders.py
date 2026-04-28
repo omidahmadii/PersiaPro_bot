@@ -6,6 +6,7 @@ import jdatetime
 from services.db import (
     get_waiting_for_payment_orders,
     update_order_status,
+    cancel_unpaid_order,
     get_order_data,
     release_account_by_username,
     get_plan_name,
@@ -38,12 +39,12 @@ def _maybe_cancel_not_paid(waiting_for_payment: dict) -> None:
         if previous:
             restored_status = "expired" if _is_order_expired(previous) else "active"
             update_order_status(order_id=previous_id, new_status=restored_status)
-        update_order_status(order_id=order_id, new_status="canceled")
+        cancel_unpaid_order(order_id=order_id)
         _notify_user_pending_renewal_canceled(waiting_for_payment)
         return
 
     release_account_by_username(str(waiting_for_payment["username"]))
-    update_order_status(order_id=order_id, new_status="canceled")
+    cancel_unpaid_order(order_id=order_id)
     _notify_user_pending_purchase_canceled(waiting_for_payment)
 
 
