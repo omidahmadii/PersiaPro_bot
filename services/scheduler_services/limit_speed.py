@@ -9,7 +9,6 @@ from services.IBSng import (
     apply_user_radius_attrs,
     get_group_radius_attribute,
     get_user_radius_attribute,
-    lock_user,
     unlock_user,
 )
 from services.scheduler_services.telegram_safe import send_scheduler_notification
@@ -19,11 +18,25 @@ from services.usage_policy import (
     get_post_limit_actions_text,
 )
 
-OVERAGE_LOCK_THRESHOLD_MB = 200
+PRE_LIMIT_RATIO = 0.95
+PRE_LIMIT_SPEED = "4m"
 
 
 def current_limit_speed() -> str:
     return normalize_speed(get_limit_speed_value()) or "64k"
+
+
+def current_pre_limit_speed() -> str:
+    return normalize_speed(PRE_LIMIT_SPEED) or PRE_LIMIT_SPEED
+
+
+def _speed_label(speed: str) -> str:
+    normalized = normalize_speed(speed) or str(speed)
+    if normalized.endswith("m"):
+        return f"{normalized[:-1]} مگابیت"
+    if normalized.endswith("k"):
+        return f"{normalized[:-1]} کیلوبیت"
+    return normalized
 
 
 def format_limit_notification(username: str, total_mb: int, limit_mb: int) -> str:
@@ -63,42 +76,42 @@ def format_admin_limit_notification(
     )
 
 
-def format_lock_notification(username: str, total_mb: int, limit_mb: int, overage_mb: int) -> str:
+def format_pre_limit_notification(username: str, total_mb: int, limit_mb: int, speed: str) -> str:
     total_gb = round((total_mb or 0) / 1024, 2)
     limit_gb = round((limit_mb or 0) / 1024, 2)
-    overage_gb = round((overage_mb or 0) / 1024, 2)
+    _ = speed
+
     return (
-        f"🚫 کاربر گرامی\n"
-        f"⚠️ سرویس <b>{username}</b> به دلیل عبور از حجم مجاز قفل شد.\n\n"
-        f"📊 حجم کل این دوره: <b>{limit_gb} GB</b>\n"
-        f"📈 مصرف شما: <b>{total_gb} GB</b>\n"
-        f"➕ اضافه‌مصرف: <b>{overage_gb} GB</b>\n\n"
-        f"برای فعال‌سازی مجدد، خرید حجم اضافه انجام دهید یا سرویس را مجددا تمدید کنید."
+        f"🔔 کاربر گرامی\n"
+        f"⚠️ مصرف سرویس <b>{username}</b> شما از 95٪ عبور کرده است.\n"
+        f"⏳ مصرف این سرویس به آستانه اتمام حجم رسیده است.\n\n"
+        f"📦 حجم کل این دوره: <b>{limit_gb} GB</b>\n"
+        f"📈 مصرف شما: <b>{total_gb} GB</b>\n\n"
+        f"{get_post_limit_actions_text()}"
     )
 
 
-def format_admin_lock_notification(
+def format_admin_pre_limit_notification(
     user_id: int,
     username: str,
     total_mb: int,
     limit_mb: int,
-    overage_mb: int,
+    speed: str,
     starts_at: str,
     expires_at: str,
 ) -> str:
     total_gb = round((total_mb or 0) / 1024, 2)
     limit_gb = round((limit_mb or 0) / 1024, 2)
-    overage_gb = round((overage_mb or 0) / 1024, 2)
-    threshold_gb = round(OVERAGE_LOCK_THRESHOLD_MB / 1024, 2)
+
     return (
-        f"⛔ کاربر <a href='tg://user?id={user_id}'>{user_id}</a>\n"
-        f"به دلیل اضافه‌مصرف، قفل شد.\n\n"
+        f"🔔 کاربر <a href='tg://user?id={user_id}'>{user_id}</a>\n"
+        f"از آستانه 95٪ مصرف عبور کرد و سرعت موقت اعمال شد.\n\n"
         f"👤 یوزرنیم سرویس: <b>{username}</b>\n"
+        f"⚡ سرعت اعمال‌شده: <b>{_speed_label(speed)}</b>\n"
         f"📅 شروع سرویس: <b>{starts_at or '-'}</b>\n"
         f"⏳ پایان سرویس: <b>{expires_at or '-'}</b>\n"
         f"📊 حجم کل: <b>{limit_gb} GB</b>\n"
-        f"📈 مصرف کاربر: <b>{total_gb} GB</b>\n"
-        f"➕ اضافه‌مصرف: <b>{overage_gb} GB</b> (بیشتر از {threshold_gb} GB)"
+        f"📈 مصرف کاربر: <b>{total_gb} GB</b>"
     )
 
 
@@ -108,11 +121,14 @@ def send_notification(user_id: int, text: str):
 
 def get_rate_limit(speed: str) -> str:
     rate_limit_map = {
+        "16k": 'Rate-Limit="16k/16k"',
         "32k": 'Rate-Limit="32k/32k"',
         "64k": 'Rate-Limit="64k/64k"',
         "128k": 'Rate-Limit="128k/128k"',
         "256k": 'Rate-Limit="256k/256k"',
         "512k": 'Rate-Limit="512k/512k"',
+        "4m": 'Rate-Limit="4m/4m"',
+        "4096k": 'Rate-Limit="4m/4m"',
     }
 
     speed = (speed or "").strip().lower()
@@ -126,6 +142,36 @@ def normalize_speed(speed: Optional[str]) -> Optional[str]:
     if not speed:
         return None
     return speed.strip().lower()
+
+
+def speed_to_kbps(speed: Optional[str]) -> Optional[int]:
+    normalized = normalize_speed(speed)
+    if not normalized:
+        return None
+    if normalized.endswith("k"):
+        try:
+            return int(float(normalized[:-1]))
+        except ValueError:
+            return None
+    if normalized.endswith("m"):
+        try:
+            return int(float(normalized[:-1]) * 1024)
+        except ValueError:
+            return None
+    return None
+
+
+def is_same_speed(left: Optional[str], right: Optional[str]) -> bool:
+    left_norm = normalize_speed(left)
+    right_norm = normalize_speed(right)
+    if left_norm == right_norm:
+        return True
+
+    left_kbps = speed_to_kbps(left_norm)
+    right_kbps = speed_to_kbps(right_norm)
+    if left_kbps is None or right_kbps is None:
+        return False
+    return left_kbps == right_kbps
 
 
 def save_applied_speed_to_db(order_id: int, applied_speed: Optional[str]):
@@ -189,6 +235,7 @@ def get_orders_for_limitation():
                 expires_at,
                 volume_gb,
                 extra_volume_gb,
+                overused_volume_gb,
                 usage_total_mb,
                 usage_applied_speed,
                 usage_lock_applied
@@ -210,6 +257,7 @@ def get_orders_for_limitation():
             expires_at,
             volume_gb,
             extra_volume_gb,
+            overused_volume_gb,
             usage_total_mb,
             usage_applied_speed,
             usage_lock_applied,
@@ -234,13 +282,14 @@ def get_orders_for_limitation():
         if isinstance(expires_at, bytes):
             expires_at = expires_at.decode("utf-8", errors="ignore")
 
-        limit_mb = ((volume_gb or 0) + (extra_volume_gb or 0)) * 1024
+        effective_total_mb = max(int(usage_total_mb or 0), 0)
+        limit_mb = int(round((float(volume_gb or 0) + float(extra_volume_gb or 0) + float(overused_volume_gb or 0)) * 1024))
         valid_rows.append(
             {
                 "order_id": order_id,
                 "user_id": user_id,
                 "username": str(username),
-                "total_mb": int(usage_total_mb or 0),
+                "total_mb": effective_total_mb,
                 "applied_speed": normalize_speed(usage_applied_speed),
                 "usage_lock_applied": int(usage_lock_applied or 0),
                 "limit_mb": limit_mb,
@@ -283,6 +332,7 @@ def apply_limit(username: str, order_id: int, speed: str):
 def limit_speed():
     rows = get_orders_for_limitation()
     limit_speed_value = current_limit_speed()
+    pre_limit_speed_value = current_pre_limit_speed()
 
     for row in rows:
         order_id = row["order_id"]
@@ -297,49 +347,8 @@ def limit_speed():
 
         if limit_mb <= 0:
             continue
-        overage_mb = max(total_mb - limit_mb, 0)
 
-        if overage_mb >= OVERAGE_LOCK_THRESHOLD_MB:
-            if usage_lock_applied:
-                continue
-
-            try:
-                lock_user(username=username)
-                save_usage_lock_state(order_id=order_id, locked=True)
-            except Exception as exc:
-                print(f"[!] failed to lock order_id={order_id}, username={username}: {exc}")
-                continue
-
-            user_text = format_lock_notification(
-                username=username,
-                total_mb=total_mb,
-                limit_mb=limit_mb,
-                overage_mb=overage_mb,
-            )
-            admin_text = format_admin_lock_notification(
-                user_id=user_id,
-                username=username,
-                total_mb=total_mb,
-                limit_mb=limit_mb,
-                overage_mb=overage_mb,
-                starts_at=starts_at,
-                expires_at=expires_at,
-            )
-
-            if int(user_id or 0) > 0:
-                try:
-                    send_notification(user_id=user_id, text=user_text)
-                except Exception as exc:
-                    print(f"[!] failed to notify user {user_id}: {exc}")
-
-            for admin in ADMINS:
-                try:
-                    send_notification(user_id=admin, text=admin_text)
-                except Exception as exc:
-                    print(f"[!] failed to notify admin {admin}: {exc}")
-
-            continue
-
+        # Migrate previously locked users to the new policy: always keep them online.
         if usage_lock_applied:
             try:
                 unlock_user(username=username)
@@ -347,40 +356,66 @@ def limit_speed():
             except Exception as exc:
                 print(f"[!] failed to unlock order_id={order_id}, username={username}: {exc}")
 
-        if total_mb < limit_mb:
+        usage_ratio = float(total_mb) / float(limit_mb)
+        target_speed = None
+        is_hard_limit = False
+        if total_mb >= limit_mb:
+            target_speed = limit_speed_value
+            is_hard_limit = True
+        elif usage_ratio >= PRE_LIMIT_RATIO:
+            target_speed = pre_limit_speed_value
+        else:
             continue
-        if applied_speed == limit_speed_value:
+
+        if is_same_speed(applied_speed, target_speed):
             continue
 
         try:
-            apply_limit(username=username, order_id=order_id, speed=limit_speed_value)
+            apply_limit(username=username, order_id=order_id, speed=target_speed)
 
-            user_text = format_limit_notification(
-                username=username,
-                total_mb=total_mb,
-                limit_mb=limit_mb,
-            )
-            admin_text = format_admin_limit_notification(
-                user_id=user_id,
-                username=username,
-                total_mb=total_mb,
-                limit_mb=limit_mb,
-                speed=get_limit_speed_display(limit_speed_value),
-                starts_at=starts_at,
-                expires_at=expires_at,
-            )
+            if is_hard_limit:
+                user_text = format_limit_notification(
+                    username=username,
+                    total_mb=total_mb,
+                    limit_mb=limit_mb,
+                )
+                admin_text = format_admin_limit_notification(
+                    user_id=user_id,
+                    username=username,
+                    total_mb=total_mb,
+                    limit_mb=limit_mb,
+                    speed=get_limit_speed_display(limit_speed_value),
+                    starts_at=starts_at,
+                    expires_at=expires_at,
+                )
 
-            if int(user_id or 0) > 0:
-                try:
-                    send_notification(user_id=user_id, text=user_text)
-                except Exception as exc:
-                    print(f"[!] failed to notify user {user_id}: {exc}")
+                if int(user_id or 0) > 0:
+                    try:
+                        send_notification(user_id=user_id, text=user_text)
+                    except Exception as exc:
+                        print(f"[!] failed to notify user {user_id}: {exc}")
 
-            for admin in ADMINS:
-                try:
-                    send_notification(user_id=admin, text=admin_text)
-                except Exception as exc:
-                    print(f"[!] failed to notify admin {admin}: {exc}")
+                for admin in ADMINS:
+                    try:
+                        send_notification(user_id=admin, text=admin_text)
+                    except Exception as exc:
+                        print(f"[!] failed to notify admin {admin}: {exc}")
+            else:
+                admin_text = format_admin_pre_limit_notification(
+                    user_id=user_id,
+                    username=username,
+                    total_mb=total_mb,
+                    limit_mb=limit_mb,
+                    speed=target_speed,
+                    starts_at=starts_at,
+                    expires_at=expires_at,
+                )
+
+                for admin in ADMINS:
+                    try:
+                        send_notification(user_id=admin, text=admin_text)
+                    except Exception as exc:
+                        print(f"[!] failed pre-limit notify admin {admin}: {exc}")
 
         except Exception as exc:
             print(f"[!] failed to apply limit for order_id={order_id}, username={username}: {exc}")

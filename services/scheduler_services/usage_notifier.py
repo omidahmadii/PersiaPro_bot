@@ -1,8 +1,6 @@
-from services.db import get_orders_for_usage_notifications, update_order_usage_notif_level
+﻿from services.db import get_orders_for_usage_notifications, update_order_usage_notif_level
 from services.scheduler_services.telegram_safe import send_scheduler_notification
 from services.usage_policy import get_post_limit_actions_text
-
-OVERAGE_LOCK_THRESHOLD_MB = 200
 
 
 def get_usage_notification_level(percent: float) -> int:
@@ -31,35 +29,35 @@ def send_notification(user_id: int, text: str):
 def build_message(order: dict, level: int, current_percent: float, limit_mb: int) -> str:
     username = order["username"]
     message_name = (order.get("message_name") or "").strip()
-    used_mb = int(order.get("usage_total_mb") or 0)
+    used_mb = int(order.get("usage_total_mb") or order.get("usage_effective_mb") or 0)
     remaining_mb = max(limit_mb - used_mb, 0)
-    greeting = f"{message_name} جان" if message_name else "مشترک گرامی"
+    greeting = f"{message_name} Ø¬Ø§Ù†" if message_name else "Ù…Ø´ØªØ±Ú© Ú¯Ø±Ø§Ù…ÛŒ"
     display_percent = format_percent(current_percent)
 
     if level >= 95:
         headline = (
-            f"مصرف سرویس <code>{username}</code> الان به <b>{display_percent}%</b> رسیده "
-            "و به انتهای حجم خیلی نزدیک شده است."
+            f"Ù…ØµØ±Ù Ø³Ø±ÙˆÛŒØ³ <code>{username}</code> Ø§Ù„Ø§Ù† Ø¨Ù‡ <b>{display_percent}%</b> Ø±Ø³ÛŒØ¯Ù‡ "
+            "Ùˆ Ø¨Ù‡ Ø§Ù†ØªÙ‡Ø§ÛŒ Ø­Ø¬Ù… Ø®ÛŒÙ„ÛŒ Ù†Ø²Ø¯ÛŒÚ© Ø´Ø¯Ù‡ Ø§Ø³Øª."
         )
         warning_text = (
-            "⏳ با اتمام حجم، این سرویس به‌زودی وارد محدودیت سرعت می‌شود.\n"
+            "⏳ مصرف این سرویس به آستانه اتمام حجم رسیده است.\n"
         )
     else:
         headline = (
-            f"مصرف سرویس <code>{username}</code> الان به <b>{display_percent}%</b> رسیده "
-            f"و از مرز هشدار <b>{level}%</b> عبور کرده است."
+            f"Ù…ØµØ±Ù Ø³Ø±ÙˆÛŒØ³ <code>{username}</code> Ø§Ù„Ø§Ù† Ø¨Ù‡ <b>{display_percent}%</b> Ø±Ø³ÛŒØ¯Ù‡ "
+            f"Ùˆ Ø§Ø² Ù…Ø±Ø² Ù‡Ø´Ø¯Ø§Ø± <b>{level}%</b> Ø¹Ø¨ÙˆØ± Ú©Ø±Ø¯Ù‡ Ø§Ø³Øª."
         )
         warning_text = (
-            "⚠️ بعد از اتمام حجم، سرعت این سرویس محدود می‌شود.\n"
+            "âš ï¸ Ø¨Ø¹Ø¯ Ø§Ø² Ø§ØªÙ…Ø§Ù… Ø­Ø¬Ù…ØŒ Ø³Ø±Ø¹Øª Ø§ÛŒÙ† Ø³Ø±ÙˆÛŒØ³ Ù…Ø­Ø¯ÙˆØ¯ Ù…ÛŒâ€ŒØ´ÙˆØ¯.\n"
         )
 
     return (
-        f"📊 <b>{greeting}</b>\n\n"
+        f"ðŸ“Š <b>{greeting}</b>\n\n"
         f"{headline}\n"
-        f"📈 مصرف فعلی: <b>{format_gb_from_mb(used_mb)} گیگ</b>\n"
-        f"📦 حجم کل: <b>{format_gb_from_mb(limit_mb)} گیگ</b>\n"
-        f"📉 حجم باقی‌مانده: <b>{format_gb_from_mb(remaining_mb)} گیگ</b>\n"
-        f"🔢 درصد فعلی مصرف: <b>{display_percent}%</b>\n\n"
+        f"ðŸ“ˆ Ù…ØµØ±Ù ÙØ¹Ù„ÛŒ: <b>{format_gb_from_mb(used_mb)} Ú¯ÛŒÚ¯</b>\n"
+        f"ðŸ“¦ Ø­Ø¬Ù… Ú©Ù„: <b>{format_gb_from_mb(limit_mb)} Ú¯ÛŒÚ¯</b>\n"
+        f"ðŸ“‰ Ø­Ø¬Ù… Ø¨Ø§Ù‚ÛŒâ€ŒÙ…Ø§Ù†Ø¯Ù‡: <b>{format_gb_from_mb(remaining_mb)} Ú¯ÛŒÚ¯</b>\n"
+        f"ðŸ”¢ Ø¯Ø±ØµØ¯ ÙØ¹Ù„ÛŒ Ù…ØµØ±Ù: <b>{display_percent}%</b>\n\n"
         f"{warning_text}"
         f"{get_post_limit_actions_text()}"
     )
@@ -74,17 +72,21 @@ def notify_usage_thresholds():
             if not user_id:
                 continue
 
-            limit_mb = int(((order.get("volume_gb") or 0) + (order.get("extra_volume_gb") or 0)) * 1024)
+            limit_mb = int(
+                round(
+                    (
+                        float(order.get("volume_gb") or 0)
+                        + float(order.get("extra_volume_gb") or 0)
+                        + float(order.get("overused_volume_gb") or 0)
+                    )
+                    * 1024
+                )
+            )
             if limit_mb <= 0:
                 continue
 
-            usage_total_mb = int(order.get("usage_total_mb") or 0)
-            usage_lock_applied = int(order.get("usage_lock_applied") or 0)
-            overage_mb = max(usage_total_mb - limit_mb, 0)
-            if usage_lock_applied == 1 or overage_mb >= OVERAGE_LOCK_THRESHOLD_MB:
-                continue
-
-            usage_percent = (usage_total_mb * 100) / limit_mb
+            usage_effective_mb = int(order.get("usage_total_mb") or order.get("usage_effective_mb") or 0)
+            usage_percent = (usage_effective_mb * 100) / limit_mb
             level_needed = get_usage_notification_level(usage_percent)
             last_level = int(order.get("usage_notif_level") or 0)
 
@@ -97,4 +99,4 @@ def notify_usage_thresholds():
                 continue
             update_order_usage_notif_level(level_needed=level_needed, order_id=order["id"])
         except Exception as exc:
-            print(f"⚠️ Failed to send usage notification for order {order.get('id')}: {exc}")
+            print(f"âš ï¸ Failed to send usage notification for order {order.get('id')}: {exc}")

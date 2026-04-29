@@ -5,7 +5,7 @@ from typing import Optional, List, Dict
 
 import jdatetime
 
-from config import DB_PATH
+from config import DB_PATH, ORDER_ARCHIVE_AFTER_DAYS
 
 
 def _now_text(timespec: str = "minutes") -> str:
@@ -16,6 +16,100 @@ OFFLINE_USER_ROLE = "offline"
 MANUAL_SERVICE_SOURCE = "manual_import"
 OFFLINE_MANUAL_SERVICE_SOURCE = "offline_manual"
 OPEN_ORDER_STATUSES_EXCLUDED = ("canceled", "renewed", "archived", "converted")
+ZERO_REMAINING_STATUSES = ("archived", "expired", "renewed", "canceled", "converted")
+ARCHIVE_CANDIDATE_STATUSES = ("expired", "renewed", "converted")
+ARCHIVE_IMMEDIATE_STATUSES = ("archived", "canceled")
+ARCHIVE_TABLE_NAME = "orders_archive"
+# Keep below 999 for older SQLite builds (e.g. 3.7.x) that cap bound variables at 999.
+ARCHIVE_MOVE_BATCH_SIZE = 900
+
+
+def _table_columns(cursor: sqlite3.Cursor, table: str) -> List[str]:
+    return [row[1] for row in cursor.execute(f"PRAGMA table_info({table})").fetchall()]
+
+
+def _chunked_ids(values: List[int], size: int):
+    for i in range(0, len(values), size):
+        yield values[i:i + size]
+
+
+def _move_orders_to_archive(cursor: sqlite3.Cursor, order_ids: List[int], archived_at: Optional[str] = None) -> int:
+    unique_ids = sorted({int(order_id) for order_id in order_ids if int(order_id or 0) > 0})
+    if not unique_ids:
+        return 0
+
+    orders_columns = _table_columns(cursor, "orders")
+    archive_columns = _table_columns(cursor, ARCHIVE_TABLE_NAME)
+    common_columns = [column for column in orders_columns if column in archive_columns]
+    if not common_columns:
+        return 0
+
+    common_sql = ", ".join(common_columns)
+    archive_now = archived_at or _now_text()
+    total_deleted = 0
+
+    for batch_ids in _chunked_ids(unique_ids, ARCHIVE_MOVE_BATCH_SIZE):
+        placeholders = ", ".join("?" for _ in batch_ids)
+
+        cursor.execute(
+            f"""
+            INSERT OR REPLACE INTO {ARCHIVE_TABLE_NAME} ({common_sql})
+            SELECT {common_sql}
+            FROM orders
+            WHERE id IN ({placeholders})
+            """,
+            batch_ids,
+        )
+
+        if "archived_at" in archive_columns:
+            cursor.execute(
+                f"""
+                UPDATE {ARCHIVE_TABLE_NAME}
+                SET archived_at = COALESCE(archived_at, ?)
+                WHERE id IN ({placeholders})
+                """,
+                [archive_now, *batch_ids],
+            )
+
+        if "remaining_volume_mb" in archive_columns:
+            cursor.execute(
+                f"""
+                UPDATE {ARCHIVE_TABLE_NAME}
+                SET status = 'archived',
+                    remaining_volume_mb = 0
+                WHERE id IN ({placeholders})
+                """,
+                batch_ids,
+            )
+        else:
+            cursor.execute(
+                f"""
+                UPDATE {ARCHIVE_TABLE_NAME}
+                SET status = 'archived'
+                WHERE id IN ({placeholders})
+                """,
+                batch_ids,
+            )
+
+        cursor.execute(
+            f"""
+            UPDATE accounts
+            SET order_id = NULL
+            WHERE order_id IN ({placeholders})
+            """,
+            batch_ids,
+        )
+
+        cursor.execute(
+            f"""
+            DELETE FROM orders
+            WHERE id IN ({placeholders})
+            """,
+            batch_ids,
+        )
+        total_deleted += int(cursor.rowcount or 0)
+
+    return total_deleted
 
 
 def create_tables():
@@ -95,6 +189,24 @@ def create_tables():
                     volume_bytes INTEGER,
                     FOREIGN KEY(plan_id) REFERENCES plans(id),
                     FOREIGN KEY(user_id) REFERENCES users(id)
+                )
+                """)
+
+        cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS {ARCHIVE_TABLE_NAME} (
+                    id INTEGER PRIMARY KEY,
+                    user_id INTEGER,
+                    plan_id INTEGER,
+                    username INTEGER,
+                    status TEXT NOT NULL,
+                    price INTEGER NOT NULL,
+                    created_at TEXT,
+                    starts_at BLOB,
+                    expires_at TEXT,
+                    last_notif_level INTEGER,
+                    is_renewal_of_order INTEGER,
+                    volume_bytes INTEGER,
+                    archived_at TEXT
                 )
                 """)
 
@@ -281,25 +393,88 @@ def create_tables():
         ensure_column("users", "referred_by", "INTEGER")
         ensure_column("users", "max_active_accounts", "INTEGER DEFAULT 3")
 
-        ensure_column("orders", "volume_gb", "INTEGER DEFAULT 0")
-        ensure_column("orders", "extra_volume_gb", "INTEGER DEFAULT 0")
-        ensure_column("orders", "auto_renew", "INTEGER DEFAULT 0")
-        ensure_column("orders", "usage_sent_mb", "INTEGER DEFAULT 0")
-        ensure_column("orders", "usage_received_mb", "INTEGER DEFAULT 0")
-        ensure_column("orders", "usage_total_mb", "INTEGER DEFAULT 0")
-        ensure_column("orders", "usage_last_update", "TEXT")
-        ensure_column("orders", "usage_applied_speed", "TEXT")
-        ensure_column("orders", "usage_notif_level", "INTEGER DEFAULT 0")
-        ensure_column("orders", "usage_lock_applied", "INTEGER DEFAULT 0")
-        ensure_column("orders", "eligible_for_conversion", "INTEGER DEFAULT 0")
-        ensure_column("orders", "old_limited_service", "INTEGER DEFAULT 0")
-        ensure_column("orders", "converted_by_offer", "INTEGER DEFAULT 0")
-        ensure_column("orders", "converted_to_service_id", "INTEGER")
-        ensure_column("orders", "replaced_from_service_id", "INTEGER")
-        ensure_column("orders", "service_source", "TEXT")
-        ensure_column("orders", "closed_by_conversion_at", "TEXT")
-        ensure_column("orders", "last_conversion_notification_at", "TEXT")
-        ensure_column("orders", "last_renewal_offer_notification_at", "TEXT")
+        order_column_definitions = [
+            ("volume_gb", "INTEGER DEFAULT 0"),
+            ("extra_volume_gb", "INTEGER DEFAULT 0"),
+            ("auto_renew", "INTEGER DEFAULT 0"),
+            ("usage_sent_mb", "INTEGER DEFAULT 0"),
+            ("usage_received_mb", "INTEGER DEFAULT 0"),
+            ("usage_total_mb", "INTEGER DEFAULT 0"),
+            ("usage_credit_mb", "INTEGER DEFAULT 0"),
+            ("overused_volume_gb", "REAL DEFAULT 0"),
+            ("remaining_volume_mb", "INTEGER DEFAULT 0"),
+            ("usage_last_update", "TEXT"),
+            ("usage_applied_speed", "TEXT"),
+            ("usage_notif_level", "INTEGER DEFAULT 0"),
+            ("usage_lock_applied", "INTEGER DEFAULT 0"),
+            ("eligible_for_conversion", "INTEGER DEFAULT 0"),
+            ("old_limited_service", "INTEGER DEFAULT 0"),
+            ("converted_by_offer", "INTEGER DEFAULT 0"),
+            ("converted_to_service_id", "INTEGER"),
+            ("replaced_from_service_id", "INTEGER"),
+            ("service_source", "TEXT"),
+            ("closed_by_conversion_at", "TEXT"),
+            ("last_conversion_notification_at", "TEXT"),
+            ("last_renewal_offer_notification_at", "TEXT"),
+        ]
+        for order_table in ("orders", ARCHIVE_TABLE_NAME):
+            for column_name, definition in order_column_definitions:
+                ensure_column(order_table, column_name, definition)
+        ensure_column(ARCHIVE_TABLE_NAME, "archived_at", "TEXT")
+        cursor.execute(
+            """
+            UPDATE orders
+            SET usage_credit_mb = 0
+            WHERE usage_credit_mb IS NULL
+            """
+        )
+        cursor.execute(
+            """
+            UPDATE orders
+            SET overused_volume_gb = ROUND(COALESCE(overused_volume_gb, 0) + (COALESCE(usage_credit_mb, 0) / 1024.0), 6)
+            WHERE COALESCE(usage_credit_mb, 0) > 0
+              AND COALESCE(overused_volume_gb, 0) = 0
+            """
+        )
+        cursor.execute(
+            """
+            UPDATE orders
+            SET overused_volume_gb = 0
+            WHERE overused_volume_gb IS NULL
+            """
+        )
+        cursor.execute(
+            """
+            UPDATE orders
+            SET usage_credit_mb = 0
+            WHERE COALESCE(usage_credit_mb, 0) != 0
+            """
+        )
+        cursor.execute(
+            """
+            UPDATE orders
+            SET remaining_volume_mb = 0
+            WHERE remaining_volume_mb IS NULL
+            """
+        )
+        cursor.execute(
+            """
+            UPDATE orders
+            SET remaining_volume_mb = CASE
+                WHEN CAST(ROUND((COALESCE(volume_gb, 0) + COALESCE(extra_volume_gb, 0) + COALESCE(overused_volume_gb, 0)) * 1024, 0) AS INTEGER) > COALESCE(usage_total_mb, 0)
+                THEN CAST(ROUND((COALESCE(volume_gb, 0) + COALESCE(extra_volume_gb, 0) + COALESCE(overused_volume_gb, 0)) * 1024, 0) AS INTEGER) - COALESCE(usage_total_mb, 0)
+                ELSE 0
+            END
+            WHERE COALESCE(status, '') NOT IN ('archived', 'expired', 'renewed', 'canceled', 'converted')
+            """
+        )
+        cursor.execute(
+            """
+            UPDATE orders
+            SET remaining_volume_mb = 0
+            WHERE COALESCE(status, '') IN ('archived', 'expired', 'renewed', 'canceled', 'converted')
+            """
+        )
 
         ensure_column("transactions", "amount_claimed", "INTEGER DEFAULT 0")
         ensure_column("transactions", "destination_card_id", "INTEGER")
@@ -345,6 +520,12 @@ def create_tables():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_transactions_status_created_at ON transactions(status, created_at)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_transactions_photo_hash ON transactions(photo_hash)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_username_status ON orders(username, status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_status_created_at ON orders(status, created_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_status_expires_at ON orders(status, expires_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_auto_renew_status_expires ON orders(auto_renew, status, expires_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_archive_username_status ON orders_archive(username, status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_archive_status_created_at ON orders_archive(status, created_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_archive_archived_at ON orders_archive(archived_at)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_conversion_eligibility ON orders(user_id, status, eligible_for_conversion)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_old_limited_service ON orders(old_limited_service)")
         # A plain UNIQUE index is enough here: SQLite allows multiple NULL values,
@@ -359,6 +540,7 @@ def create_tables():
 
         normalize_datetime_column("feedbacks", "created_at")
         normalize_datetime_column("orders", "created_at")
+        normalize_datetime_column("orders_archive", "created_at")
         normalize_datetime_column("transactions", "created_at")
         normalize_datetime_column("transactions", "submitted_at")
         normalize_datetime_column("transactions", "admin_reviewed_at")
@@ -369,6 +551,10 @@ def create_tables():
         normalize_datetime_column("orders", "closed_by_conversion_at")
         normalize_datetime_column("orders", "last_conversion_notification_at")
         normalize_datetime_column("orders", "last_renewal_offer_notification_at")
+        normalize_datetime_column("orders_archive", "closed_by_conversion_at")
+        normalize_datetime_column("orders_archive", "last_conversion_notification_at")
+        normalize_datetime_column("orders_archive", "last_renewal_offer_notification_at")
+        normalize_datetime_column("orders_archive", "archived_at")
         normalize_datetime_column("segments", "created_at")
         normalize_datetime_column("segment_users", "created_at")
         normalize_datetime_column("plan_segments", "created_at")
@@ -385,6 +571,16 @@ def create_tables():
         normalize_datetime_column("conversion_offer_logs", "converted_at")
         normalize_datetime_column("conversion_offer_logs", "created_at")
         normalize_datetime_column("conversion_offer_logs", "updated_at")
+
+        immediate_placeholders = ", ".join("?" for _ in ARCHIVE_IMMEDIATE_STATUSES)
+        legacy_immediate_rows = cursor.execute(
+            f"SELECT id FROM orders WHERE COALESCE(status, '') IN ({immediate_placeholders})",
+            ARCHIVE_IMMEDIATE_STATUSES,
+        ).fetchall()
+        legacy_immediate_ids = [int(row[0]) for row in legacy_immediate_rows if int(row[0] or 0) > 0]
+        if legacy_immediate_ids:
+            _move_orders_to_archive(cursor, legacy_immediate_ids, archived_at=_now_text())
+
         initialize_runtime_settings_schema(cursor)
         conn.commit()
 
@@ -1149,12 +1345,13 @@ def get_next_account_number():
 
 def insert_order(user_id, plan_id, username, price, status, volume_gb):
     created_at = _now_text()
+    remaining_volume_mb = int(round(float(volume_gb or 0) * 1024))
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute('''
-                       INSERT INTO orders (user_id, plan_id, username, price, created_at, status, volume_gb)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)
-                       ''', (user_id, plan_id, username, price, created_at, status, volume_gb))
+                       INSERT INTO orders (user_id, plan_id, username, price, created_at, status, volume_gb, remaining_volume_mb)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                       ''', (user_id, plan_id, username, price, created_at, status, volume_gb, remaining_volume_mb))
         order_id = cursor.lastrowid  # Ú¯Ø±ÙØªÙ† Ø¢ÛŒØ¯ÛŒ Ø¢Ø®Ø±ÛŒÙ† Ø±Ø¯ÛŒÙ ÙˆØ§Ø±Ø¯Ø´Ø¯Ù‡
         conn.commit()
         return order_id
@@ -1162,12 +1359,13 @@ def insert_order(user_id, plan_id, username, price, status, volume_gb):
 
 def insert_renewed_order(user_id, plan_id, username, price, status, is_renewal_of_order, volume_gb):
     created_at = _now_text()
+    remaining_volume_mb = int(round(float(volume_gb or 0) * 1024))
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute('''
-                       INSERT INTO orders (user_id, plan_id, username, price, created_at, status, is_renewal_of_order, volume_gb)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                       ''', (user_id, plan_id, username, price, created_at, status, is_renewal_of_order, volume_gb))
+                       INSERT INTO orders (user_id, plan_id, username, price, created_at, status, is_renewal_of_order, volume_gb, remaining_volume_mb)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ''', (user_id, plan_id, username, price, created_at, status, is_renewal_of_order, volume_gb, remaining_volume_mb))
         order_id = cursor.lastrowid  # Ú¯Ø±ÙØªÙ† Ø¢ÛŒØ¯ÛŒ Ø¢Ø®Ø±ÛŒÙ† Ø±Ø¯ÛŒÙ ÙˆØ§Ø±Ø¯Ø´Ø¯Ù‡
         conn.commit()
         return order_id
@@ -1176,13 +1374,14 @@ def insert_renewed_order(user_id, plan_id, username, price, status, is_renewal_o
 def insert_renewed_order_with_auto_renew(user_id, plan_id, username, price, status, is_renewal_of_order, volume_gb,
                                          auto_renew):
     created_at = _now_text()
+    remaining_volume_mb = int(round(float(volume_gb or 0) * 1024))
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute('''
-                       INSERT INTO orders (user_id, plan_id, username, price, created_at, status, is_renewal_of_order, volume_gb, auto_renew)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?,?)
+                       INSERT INTO orders (user_id, plan_id, username, price, created_at, status, is_renewal_of_order, volume_gb, auto_renew, remaining_volume_mb)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                        ''', (
-            user_id, plan_id, username, price, created_at, status, is_renewal_of_order, volume_gb, auto_renew))
+            user_id, plan_id, username, price, created_at, status, is_renewal_of_order, volume_gb, auto_renew, remaining_volume_mb))
         order_id = cursor.lastrowid  # Ú¯Ø±ÙØªÙ† Ø¢ÛŒØ¯ÛŒ Ø¢Ø®Ø±ÛŒÙ† Ø±Ø¯ÛŒÙ ÙˆØ§Ø±Ø¯Ø´Ø¯Ù‡
         conn.commit()
         return order_id
@@ -1320,13 +1519,15 @@ def release_account_by_username(username: str):
 
 
 def update_order_status(order_id: int, new_status: str):
+    status = str(new_status or "").strip().lower()
+    should_zero_remaining = status in ZERO_REMAINING_STATUSES
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(f"""
             UPDATE orders
-            SET status = ?
+            SET status = ? {", remaining_volume_mb = 0" if should_zero_remaining else ""}
             WHERE id = ?
-        """, (new_status, order_id))
+        """, (status, order_id))
         conn.commit()
 
 
@@ -1336,7 +1537,8 @@ def cancel_unpaid_order(order_id: int):
         cursor.execute("""
             UPDATE orders
             SET status = 'canceled',
-                price = 0
+                price = 0,
+                remaining_volume_mb = 0
             WHERE id = ?
         """, (order_id,))
         conn.commit()
@@ -1376,7 +1578,14 @@ def get_user_services(user_id: int):
                 orders.created_at,
                 orders.volume_gb,
                 orders.extra_volume_gb,
+                orders.overused_volume_gb,
                 orders.usage_total_mb,
+                COALESCE(orders.usage_total_mb, 0) AS usage_effective_mb,
+                CASE
+                    WHEN CAST(ROUND((COALESCE(orders.volume_gb, 0) + COALESCE(orders.extra_volume_gb, 0) + COALESCE(orders.overused_volume_gb, 0)) * 1024, 0) AS INTEGER) > COALESCE(orders.usage_total_mb, 0)
+                    THEN CAST(ROUND((COALESCE(orders.volume_gb, 0) + COALESCE(orders.extra_volume_gb, 0) + COALESCE(orders.overused_volume_gb, 0)) * 1024, 0) AS INTEGER) - COALESCE(orders.usage_total_mb, 0)
+                    ELSE 0
+                END AS remaining_volume_mb,
                 orders.usage_last_update
                 FROM orders
                 JOIN plans ON orders.plan_id = plans.id
@@ -1489,7 +1698,8 @@ def expire_old_orders():
             if expires_at < now_jdt:
                 cursor.execute("""
                     UPDATE orders
-                    SET status = 'expired'
+                    SET status = 'expired',
+                        remaining_volume_mb = 0
                     WHERE id = ?
                 """, (row['id'],))
         except Exception as e:
@@ -1504,28 +1714,38 @@ def archive_old_orders():
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
-    now = jdatetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cursor.execute("""
+    now_jdt = jdatetime.datetime.now()
+    cutoff_jdt = now_jdt - jdatetime.timedelta(days=max(int(ORDER_ARCHIVE_AFTER_DAYS or 30), 1))
+    to_archive_ids: List[int] = []
+
+    status_placeholders = ", ".join("?" for _ in ARCHIVE_CANDIDATE_STATUSES)
+    cursor.execute(
+        f"""
         SELECT id, expires_at FROM orders
-        WHERE status IN ('expired', 'renewed', 'converted')
-    """)
+        WHERE status IN ({status_placeholders})
+          AND expires_at IS NOT NULL
+        """,
+        ARCHIVE_CANDIDATE_STATUSES,
+    )
     rows = cursor.fetchall()
 
     for row in rows:
         try:
-            expires_at_str = row['expires_at']  # Ù…Ø«Ù„Ø§Ù‹: "1403-04-16 09:05"
-            expires_at = jdatetime.datetime.strptime(expires_at_str, "%Y-%m-%d %H:%M")
-            now_jdt = jdatetime.datetime.strptime(now, "%Y-%m-%d %H:%M:%S")
-            thirty_days_ago_jdt = now_jdt - jdatetime.timedelta(days=45)
-            if expires_at < thirty_days_ago_jdt:
-                cursor.execute("""
-                UPDATE orders
-                SET status = 'archived'
-                WHERE id = ?
-                """, (row['id'],))
-
+            expires_at = jdatetime.datetime.strptime(row["expires_at"], "%Y-%m-%d %H:%M")
+            if expires_at < cutoff_jdt:
+                to_archive_ids.append(int(row["id"]))
         except Exception as e:
-            print(f"Ø®Ø·Ø§ Ø¯Ø± Ø¨Ø±Ø±Ø³ÛŒ Ø³ÙØ§Ø±Ø´ {row['id']}: {e}")
+            print(f"archive candidate parse failed for order {row['id']}: {e}")
+
+    immediate_placeholders = ", ".join("?" for _ in ARCHIVE_IMMEDIATE_STATUSES)
+    immediate_rows = cursor.execute(
+        f"SELECT id FROM orders WHERE COALESCE(status, '') IN ({immediate_placeholders})",
+        ARCHIVE_IMMEDIATE_STATUSES,
+    ).fetchall()
+    to_archive_ids.extend(int(row["id"]) for row in immediate_rows if int(row["id"] or 0) > 0)
+
+    if to_archive_ids:
+        _move_orders_to_archive(cursor, to_archive_ids, archived_at=_now_text())
 
     conn.commit()
     conn.close()
@@ -1649,26 +1869,29 @@ def get_order_with_plan(order_id: int):
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT
-                o.*,
-                p.name AS plan_name,
-                p.group_name,
-                p.duration_days,
-                p.duration_months,
-                p.is_unlimited,
-                COALESCE(p.is_archived, 0) AS plan_is_archived,
-                u.first_name,
-                u.last_name,
-                u.username AS telegram_username
-            FROM orders o
-            LEFT JOIN plans p ON p.id = o.plan_id
-            LEFT JOIN users u ON u.id = o.user_id
-            WHERE o.id = ?
-            LIMIT 1
-        """, (order_id,))
-        row = cursor.fetchone()
-        return dict(row) if row else None
+        for table_name in ("orders", ARCHIVE_TABLE_NAME):
+            cursor.execute(f"""
+                SELECT
+                    o.*,
+                    p.name AS plan_name,
+                    p.group_name,
+                    p.duration_days,
+                    p.duration_months,
+                    p.is_unlimited,
+                    COALESCE(p.is_archived, 0) AS plan_is_archived,
+                    u.first_name,
+                    u.last_name,
+                    u.username AS telegram_username
+                FROM {table_name} o
+                LEFT JOIN plans p ON p.id = o.plan_id
+                LEFT JOIN users u ON u.id = o.user_id
+                WHERE o.id = ?
+                LIMIT 1
+            """, (order_id,))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+        return None
 
 
 def search_orders_for_admin(keyword: str, limit: int = 30, archived_only: bool = False):
@@ -1677,11 +1900,12 @@ def search_orders_for_admin(keyword: str, limit: int = 30, archived_only: bool =
         return []
 
     like_value = f"%{clean}%"
-    status_filter = "COALESCE(o.status, '') = 'archived'" if archived_only else "COALESCE(o.status, '') != 'archived'"
+    source_table = ARCHIVE_TABLE_NAME if archived_only else "orders"
+    status_filter = "1 = 1" if archived_only else "COALESCE(o.status, '') != 'archived'"
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT
                 o.id,
                 o.user_id,
@@ -1694,7 +1918,7 @@ def search_orders_for_admin(keyword: str, limit: int = 30, archived_only: bool =
                 p.name AS plan_name,
                 u.first_name,
                 u.last_name
-            FROM orders o
+            FROM {source_table} o
             LEFT JOIN plans p ON p.id = o.plan_id
             LEFT JOIN users u ON u.id = o.user_id
             WHERE (
@@ -1755,7 +1979,14 @@ def get_volume_services_for_user(user_id: int):
                 o.price,
                 o.volume_gb,
                 o.extra_volume_gb,
+                o.overused_volume_gb,
                 o.usage_total_mb,
+                COALESCE(o.usage_total_mb, 0) AS usage_effective_mb,
+                CASE
+                    WHEN CAST(ROUND((COALESCE(o.volume_gb, 0) + COALESCE(o.extra_volume_gb, 0) + COALESCE(o.overused_volume_gb, 0)) * 1024, 0) AS INTEGER) > COALESCE(o.usage_total_mb, 0)
+                    THEN CAST(ROUND((COALESCE(o.volume_gb, 0) + COALESCE(o.extra_volume_gb, 0) + COALESCE(o.overused_volume_gb, 0)) * 1024, 0) AS INTEGER) - COALESCE(o.usage_total_mb, 0)
+                    ELSE 0
+                END AS remaining_volume_mb,
                 o.usage_applied_speed,
                 o.starts_at,
                 o.expires_at,
@@ -1877,7 +2108,15 @@ def update_order_last_renewal_offer_notification_at(sent_at: str, order_id: int)
 def get_order_usage(order_id: int):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
-        cursor.execute("""SELECT usage_total_mb FROM orders WHERE id = ?""", (order_id,))
+        cursor.execute(
+            """
+            SELECT
+                COALESCE(usage_total_mb, 0) AS usage_effective_mb
+            FROM orders
+            WHERE id = ?
+            """,
+            (order_id,),
+        )
         row = cursor.fetchone()
         return row[0] if row else 0
 
@@ -1893,7 +2132,14 @@ def get_orders_for_usage_notifications():
                 o.username,
                 o.volume_gb,
                 o.extra_volume_gb,
+                o.overused_volume_gb,
                 o.usage_total_mb,
+                COALESCE(o.usage_total_mb, 0) AS usage_effective_mb,
+                CASE
+                    WHEN CAST(ROUND((COALESCE(o.volume_gb, 0) + COALESCE(o.extra_volume_gb, 0) + COALESCE(o.overused_volume_gb, 0)) * 1024, 0) AS INTEGER) > COALESCE(o.usage_total_mb, 0)
+                    THEN CAST(ROUND((COALESCE(o.volume_gb, 0) + COALESCE(o.extra_volume_gb, 0) + COALESCE(o.overused_volume_gb, 0)) * 1024, 0) AS INTEGER) - COALESCE(o.usage_total_mb, 0)
+                    ELSE 0
+                END AS remaining_volume_mb,
                 o.usage_notif_level,
                 o.usage_lock_applied,
                 u.message_name
@@ -1906,7 +2152,7 @@ def get_orders_for_usage_notifications():
               AND COALESCE(u.role, '') != 'offline'
               AND o.username IS NOT NULL
               AND COALESCE(p.is_unlimited, 0) = 0
-              AND (COALESCE(o.volume_gb, 0) + COALESCE(o.extra_volume_gb, 0)) > 0
+              AND (COALESCE(o.volume_gb, 0) + COALESCE(o.extra_volume_gb, 0) + COALESCE(o.overused_volume_gb, 0)) > 0
         """)
         return [dict(row) for row in cursor.fetchall()]
 
@@ -2098,11 +2344,21 @@ def create_manual_service_order(
                 created_at,
                 status,
                 volume_gb,
+                remaining_volume_mb,
                 service_source
             )
-            VALUES (?, ?, ?, ?, ?, 'active', ?, ?)
+            VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)
             """,
-            (int(user_id), int(plan_id), username, price, now_text, volume_gb, service_source),
+            (
+                int(user_id),
+                int(plan_id),
+                username,
+                price,
+                now_text,
+                volume_gb,
+                int(round(float(volume_gb or 0) * 1024)),
+                service_source,
+            ),
         )
         order_id = cursor.lastrowid
 

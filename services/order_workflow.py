@@ -114,6 +114,41 @@ def _append_warning(current_warning: Optional[str], new_warning: Optional[str]) 
     return f"{current_warning}\n{new_warning}"
 
 
+def _total_limit_mb(volume_gb: int, extra_volume_gb: int, overused_volume_gb: float = 0.0) -> int:
+    total_gb = max(float(volume_gb or 0) + float(extra_volume_gb or 0) + float(overused_volume_gb or 0), 0.0)
+    return int(round(total_gb * 1024))
+
+
+def _remaining_volume_mb(usage_total_mb: int, total_limit_mb: int) -> int:
+    return max(int(total_limit_mb or 0) - int(usage_total_mb or 0), 0)
+
+
+def _overused_mb(usage_total_mb: int, total_limit_mb: int) -> int:
+    return max(int(usage_total_mb or 0) - int(total_limit_mb or 0), 0)
+
+
+def _gb_from_mb(value_mb: int) -> float:
+    return round(float(max(int(value_mb or 0), 0)) / 1024.0, 6)
+
+
+def _usage_notif_level_from_percent(percent: float) -> int:
+    if percent >= 95:
+        return 95
+    if percent >= 75:
+        return 75
+    if percent >= 50:
+        return 50
+    return 0
+
+
+def _usage_notif_level_from_usage(usage_total_mb: int, total_limit_mb: int) -> int:
+    limit_mb = int(total_limit_mb or 0)
+    if limit_mb <= 0:
+        return 0
+    usage_percent = (max(int(usage_total_mb or 0), 0) * 100.0) / float(limit_mb)
+    return _usage_notif_level_from_percent(usage_percent)
+
+
 def _apply_live_plan_change(
     username: Optional[str],
     group_name: Optional[str],
@@ -209,8 +244,16 @@ def cancel_order(order_id: int, admin_id: Optional[int] = None, note: Optional[s
         if parent and order["status"] in {"waiting_for_payment", "reserved"}:
             restored_parent_status = _status_after_restore(parent)
             cur.execute(
-                "UPDATE orders SET status = ? WHERE id = ?",
-                (restored_parent_status, parent["id"]),
+                """
+                UPDATE orders
+                SET status = ?,
+                    remaining_volume_mb = CASE
+                        WHEN ? = 'expired' THEN 0
+                        ELSE COALESCE(remaining_volume_mb, 0)
+                    END
+                WHERE id = ?
+                """,
+                (restored_parent_status, restored_parent_status, parent["id"]),
             )
 
         for child in children:
@@ -218,7 +261,8 @@ def cancel_order(order_id: int, admin_id: Optional[int] = None, note: Optional[s
                 """
                 UPDATE orders
                 SET status = 'canceled',
-                    price = CASE WHEN status = 'waiting_for_payment' THEN 0 ELSE price END
+                    price = CASE WHEN status = 'waiting_for_payment' THEN 0 ELSE price END,
+                    remaining_volume_mb = 0
                 WHERE id = ?
                 """,
                 (child["id"],),
@@ -230,7 +274,8 @@ def cancel_order(order_id: int, admin_id: Optional[int] = None, note: Optional[s
             """
             UPDATE orders
             SET status = 'canceled',
-                price = CASE WHEN status = 'waiting_for_payment' THEN 0 ELSE price END
+                price = CASE WHEN status = 'waiting_for_payment' THEN 0 ELSE price END,
+                remaining_volume_mb = 0
             WHERE id = ?
             """,
             (order_id,),
@@ -351,8 +396,14 @@ def change_order_plan(order_id: int, new_plan_id: int, admin_id: Optional[int] =
         expires_text = order["expires_at"]
         usage_sent_mb = order["usage_sent_mb"]
         usage_received_mb = order["usage_received_mb"]
-        usage_total_mb = order["usage_total_mb"]
-        total_limit_mb = int((int(new_plan["volume_gb"] or 0) + int(order["extra_volume_gb"] or 0)) * 1024)
+        usage_total_mb = int(order["usage_total_mb"] or 0)
+        overused_volume_gb = float(order["overused_volume_gb"] or 0)
+        total_limit_mb = _total_limit_mb(
+            volume_gb=int(new_plan["volume_gb"] or 0),
+            extra_volume_gb=int(order["extra_volume_gb"] or 0),
+            overused_volume_gb=overused_volume_gb,
+        )
+        remaining_mb = _remaining_volume_mb(usage_total_mb=usage_total_mb, total_limit_mb=total_limit_mb)
 
         cur.execute(
             """
@@ -365,6 +416,7 @@ def change_order_plan(order_id: int, new_plan_id: int, admin_id: Optional[int] =
                 usage_sent_mb = ?,
                 usage_received_mb = ?,
                 usage_total_mb = ?,
+                remaining_volume_mb = ?,
                 last_notif_level = 0,
                 usage_applied_speed = NULL,
                 usage_notif_level = 0,
@@ -380,6 +432,7 @@ def change_order_plan(order_id: int, new_plan_id: int, admin_id: Optional[int] =
                 usage_sent_mb,
                 usage_received_mb,
                 usage_total_mb,
+                remaining_mb,
                 order_id,
             ),
         )
@@ -395,7 +448,7 @@ def change_order_plan(order_id: int, new_plan_id: int, admin_id: Optional[int] =
             username=username,
             group_name=group_name,
             order_id=order_id,
-            usage_total_mb=int(usage_total_mb or 0),
+            usage_total_mb=usage_total_mb,
             total_limit_mb=total_limit_mb,
             unlock=was_usage_locked,
         )
@@ -461,7 +514,13 @@ def adjust_manual_extra_volume(order_id: int, volume_gb: int, admin_id: Optional
             }
 
         usage_total_mb = int(order["usage_total_mb"] or 0)
-        total_limit_mb = int((int(order["volume_gb"] or 0) + new_extra_volume) * 1024)
+        overused_volume_gb = float(order["overused_volume_gb"] or 0)
+        total_limit_mb = _total_limit_mb(
+            volume_gb=int(order["volume_gb"] or 0),
+            extra_volume_gb=new_extra_volume,
+            overused_volume_gb=overused_volume_gb,
+        )
+        remaining_mb = _remaining_volume_mb(usage_total_mb=usage_total_mb, total_limit_mb=total_limit_mb)
         now_text = _now_text()
         source_type = "admin_manual_add" if delta_volume > 0 else "admin_manual_reduce"
 
@@ -469,12 +528,13 @@ def adjust_manual_extra_volume(order_id: int, volume_gb: int, admin_id: Optional
             """
             UPDATE orders
             SET extra_volume_gb = ?,
+                remaining_volume_mb = ?,
                 usage_applied_speed = NULL,
                 usage_notif_level = 0,
                 usage_lock_applied = 0
             WHERE id = ?
             """,
-            (new_extra_volume, order_id),
+            (new_extra_volume, remaining_mb, order_id),
         )
         cur.execute(
             """
@@ -637,6 +697,24 @@ def purchase_volume_package(user_id: int, order_id: int, package_id: int) -> dic
         now_text = _now_text()
         new_extra_volume = int(order["extra_volume_gb"] or 0) + int(package["volume_gb"] or 0)
         new_balance = current_balance - package_price
+        current_overused_volume_gb = float(order["overused_volume_gb"] or 0)
+        current_limit_mb = _total_limit_mb(
+            volume_gb=int(order["volume_gb"] or 0),
+            extra_volume_gb=int(order["extra_volume_gb"] or 0),
+            overused_volume_gb=current_overused_volume_gb,
+        )
+        current_usage_mb = int(order["usage_total_mb"] or 0)
+        new_overused_volume_gb = round(current_overused_volume_gb + _gb_from_mb(_overused_mb(current_usage_mb, current_limit_mb)), 6)
+        new_total_limit_mb = _total_limit_mb(
+            volume_gb=int(order["volume_gb"] or 0),
+            extra_volume_gb=new_extra_volume,
+            overused_volume_gb=new_overused_volume_gb,
+        )
+        remaining_mb = _remaining_volume_mb(usage_total_mb=current_usage_mb, total_limit_mb=new_total_limit_mb)
+        usage_notif_level = _usage_notif_level_from_usage(
+            usage_total_mb=current_usage_mb,
+            total_limit_mb=new_total_limit_mb,
+        )
 
         cur.execute(
             "UPDATE users SET balance = ? WHERE id = ?",
@@ -646,12 +724,20 @@ def purchase_volume_package(user_id: int, order_id: int, package_id: int) -> dic
             """
             UPDATE orders
             SET extra_volume_gb = ?,
+                overused_volume_gb = ?,
+                remaining_volume_mb = ?,
                 usage_applied_speed = NULL,
-                usage_notif_level = 0,
+                usage_notif_level = ?,
                 usage_lock_applied = 0
             WHERE id = ?
             """,
-            (new_extra_volume, order_id),
+            (
+                new_extra_volume,
+                new_overused_volume_gb,
+                remaining_mb,
+                usage_notif_level,
+                order_id,
+            ),
         )
         cur.execute(
             """
@@ -697,5 +783,6 @@ def purchase_volume_package(user_id: int, order_id: int, package_id: int) -> dic
         "price": package_price,
         "new_balance": new_balance,
         "new_extra_volume_gb": new_extra_volume,
+        "new_overused_volume_gb": new_overused_volume_gb,
         "ibs_warning": ibs_warning,
     }

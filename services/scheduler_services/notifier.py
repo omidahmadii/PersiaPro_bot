@@ -53,7 +53,7 @@ def _build_renewal_offer_message(order: dict, target_plan: dict, days_threshold:
         f"⏳ سرویس <b><code>{order['username']}</code></b> کمتر از {days_threshold} روز دیگر به پایان می‌رسد.\n\n"
         f"🎯 پلن پیشنهادی برای تمدید: <b>{target_plan_name}</b>\n"
         "🚀 این پلن با محدودیت حداقلی ارائه شده و دسترسی مناسبی به واتساپ، اینستاگرام و اکثر اپلیکیشن‌های پرکاربرد دارد.\n\n"
-        "🔄 برای مشاهده و تمدید، از منوی ربات «تمدید سرویس» را انتخاب کنید."
+        "🔄 برای مشاهده و تمدید، از منوی ربات «تمدید» را انتخاب کنید."
     )
 
 
@@ -160,9 +160,9 @@ def build_message(level: int, status: str, order: dict) -> str:
     }
 
     title, body = templates[level]
-    action_line = "برای جلوگیری از قطع اتصال، همین حالا از منوی ربات گزینهٔ «تمدید سرویس» را انتخاب کنید."
+    action_line = "برای جلوگیری از قطع اتصال، همین حالا از منوی ربات گزینهٔ «تمدید» را انتخاب کنید."
     if level == 4:
-        action_line = "برای فعال‌سازی مجدد، از منوی ربات «تمدید سرویس» را انتخاب کنید."
+        action_line = "برای فعال‌سازی مجدد، از منوی ربات «تمدید» را انتخاب کنید."
     name = user_message_name.strip() if user_message_name else ""
 
     if name:

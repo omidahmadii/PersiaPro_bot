@@ -133,19 +133,54 @@ def _current_month_filters():
     }
 
 
+VOLUME_COMMITMENT_STATUSES = (
+    "active",
+    "waiting_for_renewal",
+    "waiting_for_renewal_not_paid",
+    "reserved",
+)
+
+
+def _table_exists(cur: sqlite3.Cursor, table_name: str) -> bool:
+    row = cur.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+        (table_name,),
+    ).fetchone()
+    return bool(row)
+
+
+def _orders_source_sql(cur: sqlite3.Cursor, alias: str = "o", include_archive: bool = True) -> str:
+    if include_archive and _table_exists(cur, "orders_archive"):
+        return f"(SELECT * FROM orders UNION ALL SELECT * FROM orders_archive) {alias}"
+    return f"orders {alias}"
+
+
+def _fmt_gb(value: Optional[float], decimals: int = 3) -> str:
+    try:
+        number = float(value or 0.0)
+    except Exception:
+        number = 0.0
+    rendered = f"{number:,.{decimals}f}".rstrip("0").rstrip(".")
+    return rendered if rendered else "0"
+
+
 def reports_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
+                InlineKeyboardButton(text="🧭 اسنپ‌شات مدیریتی", callback_data="report:management_snapshot"),
                 InlineKeyboardButton(text="🧪 وضعیت محیط", callback_data="report:env_status"),
+            ],
+            [
+                InlineKeyboardButton(text="📦 تعهد حجمی", callback_data="report:volume_commitment"),
                 InlineKeyboardButton(text="📊 داشبورد ماه", callback_data="report:dashboard_month"),
             ],
             [
-                InlineKeyboardButton(text="📦 سفارش‌ها", callback_data="report:orders_overview"),
+                InlineKeyboardButton(text="🧾 سفارش‌ها", callback_data="report:orders_overview"),
                 InlineKeyboardButton(text="💰 مالی و کیف پول", callback_data="report:wallet_overview"),
             ],
             [
-                InlineKeyboardButton(text="📈 پلن‌های پرفروش", callback_data="report:top_plans"),
+                InlineKeyboardButton(text="🏆 پلن‌ها", callback_data="report:top_plans"),
                 InlineKeyboardButton(text="👥 کاربران", callback_data="report:users_overview"),
             ],
             [
@@ -153,8 +188,8 @@ def reports_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="📬 بازخوردها", callback_data="report:feedback_overview"),
             ],
             [
-                InlineKeyboardButton(text="🔎 گزارش کاربر", callback_data="report:user_transactions"),
                 InlineKeyboardButton(text="💳 موجودی کاربران", callback_data="report:user_balances"),
+                InlineKeyboardButton(text="🔎 گزارش کاربر", callback_data="report:user_transactions"),
             ],
         ]
     )
@@ -188,14 +223,155 @@ def build_env_status_report() -> str:
     return "\n".join(lines)
 
 
+
+def _fetch_volume_commitment_data(conn: sqlite3.Connection) -> tuple[sqlite3.Row, list[sqlite3.Row]]:
+    cur = conn.cursor()
+    status_placeholders = ", ".join("?" for _ in VOLUME_COMMITMENT_STATUSES)
+
+    cur.execute(
+        f"""
+        SELECT
+            COUNT(*) AS services_count,
+            COALESCE(SUM(COALESCE(o.volume_gb, 0)), 0) AS base_volume_gb,
+            COALESCE(SUM(COALESCE(o.extra_volume_gb, 0)), 0) AS extra_volume_gb,
+            COALESCE(SUM(COALESCE(o.overused_volume_gb, 0)), 0) AS overused_volume_gb,
+            COALESCE(SUM(COALESCE(o.usage_total_mb, 0)) / 1024.0, 0) AS used_volume_gb,
+            COALESCE(SUM(COALESCE(o.remaining_volume_mb, 0)) / 1024.0, 0) AS remaining_volume_gb
+        FROM orders o
+        JOIN plans p ON p.id = o.plan_id
+        WHERE o.status IN ({status_placeholders})
+          AND COALESCE(p.is_unlimited, 0) = 0
+        """,
+        VOLUME_COMMITMENT_STATUSES,
+    )
+    summary = cur.fetchone()
+
+    cur.execute(
+        f"""
+        SELECT
+            COALESCE(p.name, 'پلن حذف‌شده') AS plan_name,
+            COUNT(*) AS services_count,
+            COALESCE(SUM(COALESCE(o.volume_gb, 0)), 0) AS base_volume_gb,
+            COALESCE(SUM(COALESCE(o.extra_volume_gb, 0)), 0) AS extra_volume_gb,
+            COALESCE(SUM(COALESCE(o.overused_volume_gb, 0)), 0) AS overused_volume_gb,
+            COALESCE(SUM(COALESCE(o.usage_total_mb, 0)) / 1024.0, 0) AS used_volume_gb,
+            COALESCE(SUM(COALESCE(o.remaining_volume_mb, 0)) / 1024.0, 0) AS remaining_volume_gb
+        FROM orders o
+        JOIN plans p ON p.id = o.plan_id
+        WHERE o.status IN ({status_placeholders})
+          AND COALESCE(p.is_unlimited, 0) = 0
+        GROUP BY p.id, COALESCE(p.name, 'پلن حذف‌شده')
+        ORDER BY remaining_volume_gb DESC, services_count DESC
+        """,
+        VOLUME_COMMITMENT_STATUSES,
+    )
+    rows = cur.fetchall()
+    return summary, rows
+
+
+def build_volume_commitment_report(conn: sqlite3.Connection) -> str:
+    summary, rows = _fetch_volume_commitment_data(conn)
+    services_count = int(summary["services_count"] or 0)
+    base_gb = float(summary["base_volume_gb"] or 0)
+    extra_gb = float(summary["extra_volume_gb"] or 0)
+    overused_gb = float(summary["overused_volume_gb"] or 0)
+    used_gb = float(summary["used_volume_gb"] or 0)
+    remaining_gb = float(summary["remaining_volume_gb"] or 0)
+    total_capacity_gb = max(base_gb + extra_gb + overused_gb, 0.0)
+    remaining_pct = (remaining_gb * 100.0 / total_capacity_gb) if total_capacity_gb > 0 else 0.0
+
+    lines = [
+        "📦 گزارش تعهد حجمی",
+        "",
+        f"تعداد سرویس‌های حجمی فعال: <b>{_fmt_num(services_count)}</b>",
+        f"حجم پایه فروخته‌شده: <b>{_fmt_gb(base_gb)}</b> گیگ",
+        f"حجم افزونه (هدیه/خرید): <b>{_fmt_gb(extra_gb)}</b> گیگ",
+        f"حجم مصرف آزاد اضافه‌شده: <b>{_fmt_gb(overused_gb)}</b> گیگ",
+        f"کل ظرفیت فعال فعلی: <b>{_fmt_gb(total_capacity_gb)}</b> گیگ",
+        f"حجم مصرف‌شده: <b>{_fmt_gb(used_gb)}</b> گیگ",
+        f"حجم باقی‌مانده: <b>{_fmt_gb(remaining_gb)}</b> گیگ",
+        f"تعهد حجمی جاری: <b>{_fmt_gb(remaining_gb)}</b> گیگ ({remaining_pct:.1f}% از ظرفیت فعال)",
+        "",
+        "جزئیات به تفکیک پلن:",
+    ]
+
+    if rows:
+        for index, row in enumerate(rows, start=1):
+            plan_name = escape(str(row["plan_name"] or "-"))
+            total_plan_gb = float(row["base_volume_gb"] or 0) + float(row["extra_volume_gb"] or 0) + float(row["overused_volume_gb"] or 0)
+            lines.append(
+                f"{index}. {plan_name} | تعداد: {_fmt_num(row['services_count'])} | "
+                f"باقی‌مانده: {_fmt_gb(row['remaining_volume_gb'])} گیگ | "
+                f"کل ظرفیت: {_fmt_gb(total_plan_gb)} گیگ"
+            )
+    else:
+        lines.append("سرویس حجمی فعالی برای گزارش پیدا نشد.")
+
+    return "\n".join(lines)
+
+
+def build_management_snapshot_report(conn: sqlite3.Connection) -> str:
+    cur = conn.cursor()
+    all_orders_source = _orders_source_sql(cur, alias="o", include_archive=True)
+
+    cur.execute(f"SELECT COUNT(*) AS cnt FROM {all_orders_source}")
+    total_orders_all_time = cur.fetchone()["cnt"]
+
+    cur.execute("SELECT COUNT(*) AS cnt FROM orders")
+    current_orders = cur.fetchone()["cnt"]
+
+    archive_orders = 0
+    if _table_exists(cur, "orders_archive"):
+        cur.execute("SELECT COUNT(*) AS cnt FROM orders_archive")
+        archive_orders = cur.fetchone()["cnt"]
+
+    cur.execute("SELECT COUNT(*) AS cnt FROM orders WHERE status = 'active'")
+    active_orders = cur.fetchone()["cnt"]
+    cur.execute("SELECT COUNT(*) AS cnt FROM orders WHERE status = 'waiting_for_payment'")
+    waiting_payment = cur.fetchone()["cnt"]
+    cur.execute("SELECT COUNT(*) AS cnt FROM users")
+    users_count = cur.fetchone()["cnt"]
+
+    cur.execute(
+        "SELECT COUNT(*) AS cnt FROM transactions WHERE status IN (?, ?)",
+        (STATUS_PENDING_ADMIN, STATUS_LEGACY_PENDING),
+    )
+    pending_tx = cur.fetchone()["cnt"]
+
+    cur.execute("SELECT COALESCE(SUM(balance), 0) AS total FROM users WHERE balance > 0")
+    positive_wallet = cur.fetchone()["total"]
+
+    commitment_summary, _ = _fetch_volume_commitment_data(conn)
+    remaining_gb = float(commitment_summary["remaining_volume_gb"] or 0)
+    commitment_services = int(commitment_summary["services_count"] or 0)
+
+    return "\n".join(
+        [
+            "🧭 اسنپ‌شات مدیریتی",
+            "",
+            f"کل کاربران: <b>{_fmt_num(users_count)}</b>",
+            f"کل سفارش‌ها (همه‌زمان): <b>{_fmt_num(total_orders_all_time)}</b>",
+            f"سفارش‌های جاری در جدول اصلی: <b>{_fmt_num(current_orders)}</b>",
+            f"سفارش‌های آرشیوشده: <b>{_fmt_num(archive_orders)}</b>",
+            f"سرویس‌های فعال: <b>{_fmt_num(active_orders)}</b>",
+            f"در انتظار پرداخت: <b>{_fmt_num(waiting_payment)}</b>",
+            f"تراکنش در انتظار بررسی اولیه: <b>{_fmt_num(pending_tx)}</b>",
+            f"جمع موجودی مثبت کیف پول: <b>{_fmt_num(positive_wallet)}</b> تومان",
+            "",
+            f"تعهد حجمی جاری: <b>{_fmt_gb(remaining_gb)}</b> گیگ",
+            f"تعداد سرویس‌های حجمی فعال: <b>{_fmt_num(commitment_services)}</b>",
+        ]
+    )
+
 def build_dashboard_month_report(conn: sqlite3.Connection) -> str:
     cur = conn.cursor()
     filters = _current_month_filters()
+    orders_source = _orders_source_sql(cur, alias="o", include_archive=True)
 
     cur.execute(
-        """
+        f"""
         SELECT COUNT(*) AS cnt, COALESCE(SUM(price), 0) AS total
-        FROM orders
+        FROM {orders_source}
         WHERE substr(created_at, 1, 10) >= ? AND substr(created_at, 1, 10) < ?
         """,
         (filters["greg_start"], filters["greg_end"]),
@@ -261,9 +437,9 @@ def build_dashboard_month_report(conn: sqlite3.Connection) -> str:
     new_users = cur.fetchone()["cnt"]
 
     cur.execute(
-        """
+        f"""
         SELECT COUNT(*) AS cnt
-        FROM orders
+        FROM {orders_source}
         WHERE starts_at >= ? AND starts_at < ?
         """,
         (filters["jalali_start"], filters["jalali_end"]),
@@ -271,9 +447,9 @@ def build_dashboard_month_report(conn: sqlite3.Connection) -> str:
     month_starts = cur.fetchone()["cnt"]
 
     cur.execute(
-        """
+        f"""
         SELECT COUNT(*) AS cnt
-        FROM orders
+        FROM {orders_source}
         WHERE expires_at >= ? AND expires_at < ?
         """,
         (filters["jalali_start"], filters["jalali_end"]),
@@ -297,6 +473,8 @@ def build_dashboard_month_report(conn: sqlite3.Connection) -> str:
 
     cur.execute("SELECT COUNT(*) AS cnt, COALESCE(SUM(balance), 0) AS total FROM users WHERE balance > 0")
     wallet_row = cur.fetchone()
+    commitment_summary, _ = _fetch_volume_commitment_data(conn)
+    remaining_commitment_gb = float(commitment_summary["remaining_volume_gb"] or 0)
 
     return "\n".join(
         [
@@ -319,6 +497,7 @@ def build_dashboard_month_report(conn: sqlite3.Connection) -> str:
             f"در انتظار تمدید: <b>{_fmt_num(waiting_for_renewal)}</b>",
             f"در انتظار پرداخت: <b>{_fmt_num(waiting_for_payment)}</b>",
             f"تراکنش در انتظار بررسی اولیه: <b>{_fmt_num(pending_transactions)}</b>",
+            f"تعهد حجمی جاری: <b>{_fmt_gb(remaining_commitment_gb)}</b> گیگ",
             "",
             f"کاربران دارای موجودی: <b>{_fmt_num(wallet_row['cnt'])}</b>",
             f"جمع موجودی کیف پول کاربران: <b>{_fmt_num(wallet_row['total'])}</b> تومان",
@@ -329,11 +508,20 @@ def build_dashboard_month_report(conn: sqlite3.Connection) -> str:
 def build_orders_overview_report(conn: sqlite3.Connection) -> str:
     cur = conn.cursor()
     filters = _current_month_filters()
+    all_orders_source = _orders_source_sql(cur, alias="o", include_archive=True)
+
+    cur.execute("SELECT COUNT(*) AS cnt FROM orders")
+    current_orders = cur.fetchone()["cnt"]
+
+    archived_orders = 0
+    if _table_exists(cur, "orders_archive"):
+        cur.execute("SELECT COUNT(*) AS cnt FROM orders_archive")
+        archived_orders = cur.fetchone()["cnt"]
 
     cur.execute(
-        """
+        f"""
         SELECT COALESCE(status, 'unknown') AS status, COUNT(*) AS cnt, COALESCE(SUM(price), 0) AS total
-        FROM orders
+        FROM {all_orders_source}
         GROUP BY COALESCE(status, 'unknown')
         ORDER BY cnt DESC, total DESC
         """
@@ -341,9 +529,9 @@ def build_orders_overview_report(conn: sqlite3.Connection) -> str:
     all_time_rows = cur.fetchall()
 
     cur.execute(
-        """
+        f"""
         SELECT COALESCE(status, 'unknown') AS status, COUNT(*) AS cnt, COALESCE(SUM(price), 0) AS total
-        FROM orders
+        FROM {all_orders_source}
         WHERE substr(created_at, 1, 10) >= ? AND substr(created_at, 1, 10) < ?
         GROUP BY COALESCE(status, 'unknown')
         ORDER BY cnt DESC, total DESC
@@ -353,9 +541,12 @@ def build_orders_overview_report(conn: sqlite3.Connection) -> str:
     month_rows = cur.fetchall()
 
     lines = [
-        "📦 نمای کلی سفارش‌ها",
+        "🧾 گزارش وضعیت سفارش‌ها",
         "",
-        "وضعیت کل سفارش‌ها:",
+        f"سفارش‌های جاری (orders): <b>{_fmt_num(current_orders)}</b>",
+        f"سفارش‌های آرشیوشده (orders_archive): <b>{_fmt_num(archived_orders)}</b>",
+        "",
+        "وضعیت سفارش‌ها (همه‌زمان):",
     ]
     if all_time_rows:
         for row in all_time_rows:
@@ -363,12 +554,12 @@ def build_orders_overview_report(conn: sqlite3.Connection) -> str:
     else:
         lines.append("• داده‌ای ثبت نشده.")
 
-    lines.extend(["", f"وضعیت سفارش‌های ساخته‌شده در ماه {filters['period_label']}:"])
+    lines.extend(["", f"وضعیت سفارش‌های ثبت‌شده در ماه {filters['period_label']}:"])
     if month_rows:
         for row in month_rows:
             lines.append(f"• {row['status']}: {row['cnt']} سفارش | {_fmt_num(row['total'])} تومان")
     else:
-        lines.append("• در این ماه سفارشی ثبت نشده.")
+        lines.append("• در این ماه داده‌ای ثبت نشده.")
 
     return "\n".join(lines)
 
@@ -454,13 +645,14 @@ def build_wallet_overview_report(conn: sqlite3.Connection) -> str:
 def build_top_plans_report(conn: sqlite3.Connection) -> str:
     cur = conn.cursor()
     filters = _current_month_filters()
+    all_orders_source = _orders_source_sql(cur, alias="o", include_archive=True)
 
     cur.execute(
-        """
-        SELECT COALESCE(p.name, 'بدون پلن') AS label, COUNT(*) AS cnt, COALESCE(SUM(o.price), 0) AS total
-        FROM orders o
+        f"""
+        SELECT COALESCE(p.name, 'پلن حذف‌شده') AS label, COUNT(*) AS cnt, COALESCE(SUM(o.price), 0) AS total
+        FROM {all_orders_source}
         LEFT JOIN plans p ON p.id = o.plan_id
-        GROUP BY COALESCE(p.name, 'بدون پلن')
+        GROUP BY COALESCE(p.name, 'پلن حذف‌شده')
         ORDER BY cnt DESC, total DESC
         LIMIT 10
         """
@@ -468,12 +660,12 @@ def build_top_plans_report(conn: sqlite3.Connection) -> str:
     all_time_plans = cur.fetchall()
 
     cur.execute(
-        """
-        SELECT COALESCE(p.name, 'بدون پلن') AS label, COUNT(*) AS cnt, COALESCE(SUM(o.price), 0) AS total
-        FROM orders o
+        f"""
+        SELECT COALESCE(p.name, 'پلن حذف‌شده') AS label, COUNT(*) AS cnt, COALESCE(SUM(o.price), 0) AS total
+        FROM {all_orders_source}
         LEFT JOIN plans p ON p.id = o.plan_id
         WHERE substr(o.created_at, 1, 10) >= ? AND substr(o.created_at, 1, 10) < ?
-        GROUP BY COALESCE(p.name, 'بدون پلن')
+        GROUP BY COALESCE(p.name, 'پلن حذف‌شده')
         ORDER BY cnt DESC, total DESC
         LIMIT 10
         """,
@@ -482,9 +674,9 @@ def build_top_plans_report(conn: sqlite3.Connection) -> str:
     month_plans = cur.fetchall()
 
     cur.execute(
-        """
+        f"""
         SELECT COALESCE(p.category, 'standard') AS label, COUNT(*) AS cnt
-        FROM orders o
+        FROM {all_orders_source}
         LEFT JOIN plans p ON p.id = o.plan_id
         GROUP BY COALESCE(p.category, 'standard')
         ORDER BY cnt DESC
@@ -493,21 +685,21 @@ def build_top_plans_report(conn: sqlite3.Connection) -> str:
     )
     categories = cur.fetchall()
 
-    lines = ["📈 پلن‌های پرفروش", "", "پرفروش‌ترین پلن‌ها در کل:"]
+    lines = ["🏆 گزارش پلن‌ها", "", "پرفروش‌ترین پلن‌ها در کل:"]
     if all_time_plans:
         for index, row in enumerate(all_time_plans, start=1):
-            lines.append(f"{index}. {escape(str(row['label']))} — {row['cnt']} سفارش | {_fmt_num(row['total'])} تومان")
+            lines.append(f"{index}. {escape(str(row['label']))} | {row['cnt']} سفارش | {_fmt_num(row['total'])} تومان")
     else:
         lines.append("داده‌ای ثبت نشده.")
 
     lines.extend(["", f"پرفروش‌ترین پلن‌ها در ماه {filters['period_label']}:"])
     if month_plans:
         for index, row in enumerate(month_plans, start=1):
-            lines.append(f"{index}. {escape(str(row['label']))} — {row['cnt']} سفارش | {_fmt_num(row['total'])} تومان")
+            lines.append(f"{index}. {escape(str(row['label']))} | {row['cnt']} سفارش | {_fmt_num(row['total'])} تومان")
     else:
-        lines.append("در این ماه پلنی فروخته نشده.")
+        lines.append("در این ماه داده‌ای ثبت نشده.")
 
-    lines.extend(["", "توزیع سفارش‌ها بر اساس category:"])
+    lines.extend(["", "توزیع سفارش بر اساس دسته‌بندی پلن:"])
     if categories:
         for row in categories:
             lines.append(f"• {escape(str(row['label']))}: {row['cnt']} سفارش")
@@ -753,10 +945,12 @@ def build_user_detail_report(user_id: int) -> Optional[str]:
         if not user_row:
             return None
 
+        all_orders_source = _orders_source_sql(cur, alias="o", include_archive=True)
+
         cur.execute(
-            """
+            f"""
             SELECT COALESCE(status, 'unknown') AS status, COUNT(*) AS cnt, COALESCE(SUM(price), 0) AS total
-            FROM orders
+            FROM {all_orders_source}
             WHERE user_id = ?
             GROUP BY COALESCE(status, 'unknown')
             ORDER BY cnt DESC
@@ -766,9 +960,9 @@ def build_user_detail_report(user_id: int) -> Optional[str]:
         order_status_rows = cur.fetchall()
 
         cur.execute(
-            """
+            f"""
             SELECT COUNT(*) AS cnt, COALESCE(SUM(price), 0) AS total
-            FROM orders
+            FROM {all_orders_source}
             WHERE user_id = ?
             """,
             (user_id,),
@@ -806,9 +1000,9 @@ def build_user_detail_report(user_id: int) -> Optional[str]:
         pending_initial_tx_summary = cur.fetchone()
 
         cur.execute(
-            """
-            SELECT o.id, o.username, COALESCE(p.name, 'بدون پلن') AS plan_name, o.status, o.price, o.created_at, o.expires_at
-            FROM orders o
+            f"""
+            SELECT o.id, o.username, COALESCE(p.name, 'پلن حذف‌شده') AS plan_name, o.status, o.price, o.created_at, o.expires_at
+            FROM {all_orders_source}
             LEFT JOIN plans p ON p.id = o.plan_id
             WHERE o.user_id = ?
             ORDER BY o.id DESC
@@ -840,11 +1034,11 @@ def build_user_detail_report(user_id: int) -> Optional[str]:
         "",
         f"کل سفارش‌ها: <b>{_fmt_num(orders_summary['cnt'])}</b>",
         f"جمع مبلغ سفارش‌ها: <b>{_fmt_num(orders_summary['total'])}</b> تومان",
-        f"تراکنش‌های تایید نهایی حسابداری: <b>{_fmt_num(accounting_approved_tx_summary['cnt'])}</b>",
-        f"جمع واریزی تایید نهایی: <b>{_fmt_num(accounting_approved_tx_summary['total'])}</b> تومان",
+        f"تراکنش تایید نهایی حسابداری: <b>{_fmt_num(accounting_approved_tx_summary['cnt'])}</b>",
+        f"جمع تراکنش تایید نهایی: <b>{_fmt_num(accounting_approved_tx_summary['total'])}</b> تومان",
         f"در انتظار بررسی اولیه: <b>{_fmt_num(pending_initial_tx_summary['cnt'])}</b>",
         f"در انتظار تایید حسابداری: <b>{_fmt_num(pending_accounting_tx_summary['cnt'])}</b>",
-        f"جمع مبالغ در انتظار حسابداری: <b>{_fmt_num(pending_accounting_tx_summary['total'])}</b> تومان",
+        f"جمع مبلغ در انتظار حسابداری: <b>{_fmt_num(pending_accounting_tx_summary['total'])}</b> تومان",
         "",
         "وضعیت سفارش‌ها:",
     ]
@@ -853,7 +1047,7 @@ def build_user_detail_report(user_id: int) -> Optional[str]:
         for row in order_status_rows:
             lines.append(f"• {row['status']}: {row['cnt']} سفارش | {_fmt_num(row['total'])} تومان")
     else:
-        lines.append("• سفارشی ثبت نشده.")
+        lines.append("• داده‌ای ثبت نشده.")
 
     lines.extend(["", "آخرین سفارش‌ها:"])
     if recent_orders:
@@ -863,7 +1057,7 @@ def build_user_detail_report(user_id: int) -> Optional[str]:
                 f"{escape(str(row['status']))} | {_fmt_num(row['price'])} تومان | {escape(str(row['created_at'] or '-'))}"
             )
     else:
-        lines.append("• سفارشی ثبت نشده.")
+        lines.append("• داده‌ای ثبت نشده.")
 
     lines.extend(["", "آخرین تراکنش‌ها:"])
     if recent_transactions:
@@ -873,10 +1067,9 @@ def build_user_detail_report(user_id: int) -> Optional[str]:
                 f"{_fmt_num(row['amount'])} تومان | {escape(str(row['created_at'] or '-'))}"
             )
     else:
-        lines.append("• تراکنشی ثبت نشده.")
+        lines.append("• داده‌ای ثبت نشده.")
 
     return "\n".join(lines)
-
 
 @router.message(F.text == "📑 گزارشات")
 async def show_reports_menu(message: Message):
@@ -897,6 +1090,12 @@ async def report_handler(callback: CallbackQuery, state: FSMContext):
     action = callback.data.split(":", 1)[1]
     if action == "env_status":
         text = build_env_status_report()
+    elif action == "management_snapshot":
+        with _connect() as conn:
+            text = build_management_snapshot_report(conn)
+    elif action == "volume_commitment":
+        with _connect() as conn:
+            text = build_volume_commitment_report(conn)
     elif action == "dashboard_month":
         with _connect() as conn:
             text = build_dashboard_month_report(conn)

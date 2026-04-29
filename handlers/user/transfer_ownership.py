@@ -139,7 +139,7 @@ def confirm_inline_keyboard():
     )
 
 
-@router.message(F.text == "🔁 انتقال مالکیت سرویس")
+@router.message(F.text == "🔁 انتقال مالکیت")
 async def start_transfer_ownership(message: Message, state: FSMContext):
     from_user_id = message.from_user.id
 

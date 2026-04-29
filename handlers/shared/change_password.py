@@ -94,7 +94,7 @@ async def admin_change_password_start(message: Message, state: FSMContext):
     user_id = message.from_user.id
     if not is_admin(user_id):
         await message.answer(
-            "برای تغییر رمز سرویس خودت از دکمه «🔐 تغییر رمز سرویس» استفاده کن.",
+            "برای تغییر رمز سرویس خودت از دکمه «🔐 تغییر رمز» استفاده کن.",
             reply_markup=main_menu_keyboard_for_user(user_id),
         )
         return
@@ -147,9 +147,13 @@ async def admin_set_new_password(message: Message, state: FSMContext):
     )
 
 
-@router.message(F.text == "🔐 تغییر رمز سرویس")
+@router.message(F.text == "🔐 تغییر رمز")
 async def service_password_start(message: Message, state: FSMContext):
     user_id = message.from_user.id
+    if is_admin(user_id):
+        await admin_change_password_start(message, state)
+        return
+
     services = get_user_services_for_password_change(user_id)
     if not services:
         await state.clear()

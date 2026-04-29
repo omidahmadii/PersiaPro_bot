@@ -325,6 +325,8 @@ def get_user_orders(user_id: int, page: int = 0, limit: int = USER_ORDER_PAGE_SI
             o.expires_at,
             o.volume_gb,
             o.extra_volume_gb,
+            o.overused_volume_gb,
+            o.remaining_volume_mb,
             p.name AS plan_name
         FROM orders o
         LEFT JOIN plans p ON p.id = o.plan_id
@@ -915,7 +917,8 @@ async def user_order_detail(cb: CallbackQuery):
         f"🆔 اکانت: <code>{escape(str(order.get('username') or '-'))}</code>\n"
         f"📦 پلن: {escape(str(order.get('plan_name') or '-'))}\n"
         f"💰 مبلغ: {format_price(order.get('price'))} تومان\n"
-        f"📊 حجم: {order.get('volume_gb') or 0} گیگ + {order.get('extra_volume_gb') or 0} گیگ اضافه\n"
+        f"📊 حجم: {order.get('volume_gb') or 0} گیگ + {order.get('extra_volume_gb') or 0} گیگ اضافه + {round(float(order.get('overused_volume_gb') or 0), 3)} گیگ مصرف مازاد (رایگان)\n"
+        f"📉 باقی‌مانده: {round(float(order.get('remaining_volume_mb') or 0) / 1024, 3)} گیگ\n"
         f"📍 وضعیت: {order_status_label(order.get('status'))}\n"
         f"🕒 ثبت: <code>{escape(str(order.get('created_at') or '-'))}</code>\n"
         f"🚀 شروع: <code>{escape(str(order.get('starts_at') or '-'))}</code>\n"

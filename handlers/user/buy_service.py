@@ -471,7 +471,7 @@ class BuyServiceStates(StatesGroup):
 
 # ---------------- Step 0: Entry ---------------- #
 
-@router.message(F.text == "🛒 خرید سرویس")
+@router.message(F.text == "🛒 خرید")
 async def start_buy(message: Message, state: FSMContext):
     if not await membership_guard_message(message):
         return

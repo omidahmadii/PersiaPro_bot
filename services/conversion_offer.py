@@ -229,7 +229,9 @@ def _fetch_service_from_conn(conn: sqlite3.Connection, service_id: int, user_id:
             o.created_at,
             o.volume_gb,
             o.extra_volume_gb,
+            o.overused_volume_gb,
             o.usage_total_mb,
+            o.remaining_volume_mb,
             o.usage_sent_mb,
             o.usage_received_mb,
             o.usage_last_update,
@@ -280,7 +282,9 @@ def _fetch_active_services_for_user(conn: sqlite3.Connection, user_id: int) -> l
             o.created_at,
             o.volume_gb,
             o.extra_volume_gb,
+            o.overused_volume_gb,
             o.usage_total_mb,
+            o.remaining_volume_mb,
             o.usage_sent_mb,
             o.usage_received_mb,
             o.usage_last_update,
@@ -337,8 +341,17 @@ def _calculate_remaining_volume_gb(service: dict[str, Any]) -> Optional[float]:
     if int(service.get("is_unlimited") or 0) == 1:
         return None
 
-    total_volume_gb = float(service.get("volume_gb") or 0) + float(service.get("extra_volume_gb") or 0)
-    used_gb = float(service.get("usage_total_mb") or 0) / 1024
+    remaining_volume_mb = service.get("remaining_volume_mb")
+    if remaining_volume_mb is not None:
+        return max(float(remaining_volume_mb or 0) / 1024, 0.0)
+
+    total_volume_gb = (
+        float(service.get("volume_gb") or 0)
+        + float(service.get("extra_volume_gb") or 0)
+        + float(service.get("overused_volume_gb") or 0)
+    )
+    usage_total_mb = int(service.get("usage_total_mb") or 0)
+    used_gb = float(usage_total_mb) / 1024
     return max(total_volume_gb - used_gb, 0.0)
 
 
@@ -696,7 +709,9 @@ def send_conversion_offer_notifications() -> None:
                 o.created_at,
                 o.volume_gb,
                 o.extra_volume_gb,
+                o.overused_volume_gb,
                 o.usage_total_mb,
+                o.remaining_volume_mb,
                 o.usage_sent_mb,
                 o.usage_received_mb,
                 o.usage_last_update,
@@ -896,9 +911,11 @@ def apply_conversion(user_id: int, service_id: int) -> dict[str, Any]:
                 status,
                 volume_gb,
                 extra_volume_gb,
+                overused_volume_gb,
                 usage_sent_mb,
                 usage_received_mb,
                 usage_total_mb,
+                remaining_volume_mb,
                 usage_last_update,
                 usage_applied_speed,
                 usage_notif_level,
@@ -916,7 +933,7 @@ def apply_conversion(user_id: int, service_id: int) -> dict[str, Any]:
                 closed_by_conversion_at,
                 last_conversion_notification_at
             )
-            VALUES (?, ?, ?, ?, ?, 'active', ?, 0, 0, 0, 0, NULL, NULL, 0, NULL, NULL, NULL, ?, 0, 0, 0, 0, NULL, ?, ?, NULL, NULL)
+            VALUES (?, ?, ?, ?, ?, 'active', ?, 0, 0, 0, 0, ?, NULL, NULL, 0, NULL, NULL, NULL, ?, 0, 0, 0, 0, NULL, ?, ?, NULL, NULL)
             """,
             (
                 int(service["user_id"]),
@@ -925,6 +942,7 @@ def apply_conversion(user_id: int, service_id: int) -> dict[str, Any]:
                 int(config["price"]),
                 now_text,
                 int(config["new_volume_gb"]),
+                int(round(float(config["new_volume_gb"] or 0) * 1024)),
                 int(service["id"]),
                 int(service["id"]),
                 CONVERSION_SERVICE_SOURCE,
@@ -936,6 +954,7 @@ def apply_conversion(user_id: int, service_id: int) -> dict[str, Any]:
             """
             UPDATE orders
             SET status = ?,
+                remaining_volume_mb = 0,
                 converted_by_offer = 1,
                 converted_to_service_id = ?,
                 eligible_for_conversion = 0,

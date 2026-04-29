@@ -12,6 +12,16 @@ def env_bool(name: str, default: bool = False) -> bool:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
+
+def env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw.strip())
+    except Exception:
+        return default
+
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMINS = [int(x) for x in os.getenv("ADMINS", "").split(',') if x]
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0"))
@@ -38,6 +48,7 @@ SCHEDULER_LIMIT_SPEED = env_bool("SCHEDULER_LIMIT_SPEED", default=IS_PRODUCTION)
 SCHEDULER_ACTIVATE_WAITING_FOR_PAYMENT = env_bool("SCHEDULER_ACTIVATE_WAITING_FOR_PAYMENT", default=IS_PRODUCTION)
 SCHEDULER_CANCEL_NOT_PAID = env_bool("SCHEDULER_CANCEL_NOT_PAID", default=IS_PRODUCTION)
 SCHEDULER_AUTO_RENEW = env_bool("SCHEDULER_AUTO_RENEW", default=IS_PRODUCTION)
+ORDER_ARCHIVE_AFTER_DAYS = max(env_int("ORDER_ARCHIVE_AFTER_DAYS", 30), 1)
 
 IBS_USERNAME = os.getenv("IBS_USERNAME", "")
 IBS_PASSWORD = os.getenv("IBS_PASSWORD", "")

@@ -46,12 +46,16 @@ def status_label(status: Optional[str]) -> str:
 def services_keyboard(services: list[dict]) -> InlineKeyboardMarkup:
     rows = []
     for service in services:
-        total_volume = int(service.get("volume_gb") or 0) + int(service.get("extra_volume_gb") or 0)
+        total_volume = (
+            float(service.get("volume_gb") or 0)
+            + float(service.get("extra_volume_gb") or 0)
+            + float(service.get("overused_volume_gb") or 0)
+        )
         rows.append([
             InlineKeyboardButton(
                 text=(
                     f"{service['username']} | {status_label(service.get('status'))} | "
-                    f"{service.get('plan_name') or '-'} | {total_volume} گیگ"
+                    f"{service.get('plan_name') or '-'} | {round(total_volume, 2)} گیگ"
                 ),
                 callback_data=f"extra_volume|service|{service['id']}",
             )
@@ -137,15 +141,17 @@ async def membership_guard(message: Union[Message, CallbackQuery]) -> bool:
 def build_service_summary(service: dict) -> str:
     base_volume = int(service.get("volume_gb") or 0)
     extra_volume = int(service.get("extra_volume_gb") or 0)
-    total_volume = base_volume + extra_volume
-    used_mb = int(service.get("usage_total_mb") or 0)
+    overused_volume = float(service.get("overused_volume_gb") or 0)
+    total_volume = base_volume + extra_volume + overused_volume
+    used_mb = int(service.get("usage_total_mb") or service.get("usage_effective_mb") or 0)
     return (
         f"👤 سرویس: <code>{service['username']}</code>\n"
         f"📦 پلن: {service.get('plan_name') or '-'}\n"
         f"📍 وضعیت: {status_label(service.get('status'))}\n"
         f"📊 حجم پایه: {base_volume} گیگ\n"
         f"➕ حجم اضافه فعلی: {extra_volume} گیگ\n"
-        f"🧮 مجموع حجم فعلی: {total_volume} گیگ\n"
+        f"📌 مصرف مازاد (رایگان): {round(overused_volume, 3)} گیگ\n"
+        f"🧮 مجموع حجم فعلی: {round(total_volume, 3)} گیگ\n"
         f"📈 مصرف فعلی: {format_gb_from_mb(used_mb)} گیگ\n\n"
         "این حجم فقط روی همین سفارش اعمال می‌شود و به دوره یا سرویس بعدی منتقل نخواهد شد."
     )
@@ -164,7 +170,7 @@ def build_confirmation_text(service: dict, package: dict) -> str:
     )
 
 
-@router.message(F.text == "📦 خرید حجم اضافه")
+@router.message(F.text == "📦 حجم اضافه")
 async def extra_volume_entry(message: Message, state: FSMContext):
     if not await membership_guard(message):
         return
@@ -348,6 +354,7 @@ async def extra_volume_confirm(callback: CallbackQuery, state: FSMContext):
         f"🛒 بسته: {result['package_name']}\n"
         f"📦 حجم اضافه‌شده: {result['volume_gb']} گیگ\n"
         f"➕ مجموع حجم اضافه فعلی این سفارش: {result['new_extra_volume_gb']} گیگ\n"
+        f"📌 مصرف مازاد (رایگان) مجموع: {round(float(result.get('new_overused_volume_gb') or 0), 3)} گیگ\n"
         f"💳 موجودی جدید: {format_price(result['new_balance'])} تومان",
         parse_mode="HTML",
         reply_markup=main_menu_keyboard_for_user(callback.from_user.id),
@@ -359,6 +366,7 @@ async def extra_volume_confirm(callback: CallbackQuery, state: FSMContext):
         f"🆔 سرویس: <code>{result['username']}</code>\n"
         f"🛒 بسته: {result['package_name']}\n"
         f"📦 حجم: {result['volume_gb']} گیگ\n"
+        f"📌 مصرف مازاد (رایگان) مجموع: {round(float(result.get('new_overused_volume_gb') or 0), 3)} GB\n"
         f"💰 مبلغ: {format_price(result['price'])} تومان"
     )
     await send_message_to_admins(admin_text)

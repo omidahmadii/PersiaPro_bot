@@ -498,7 +498,7 @@ def kb_services_inline(services: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
 
 
 # ---------------- Step 0: Entry ---------------- #
-@router.message(F.text == "📄 تمدید سرویس")
+@router.message(F.text == "📄 تمدید")
 async def renew_start(message: Message, state: FSMContext):
     if not await membership_guard_message(message):
         return

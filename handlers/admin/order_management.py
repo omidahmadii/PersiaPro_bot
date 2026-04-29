@@ -152,6 +152,8 @@ def build_order_caption(order: dict) -> str:
         f"💰 مبلغ: {format_price(order.get('price') or 0)} تومان\n"
         f"📊 حجم پایه: {order.get('volume_gb') or 0} گیگ\n"
         f"➕ حجم اضافه: {order.get('extra_volume_gb') or 0} گیگ\n"
+        f"📌 مصرف مازاد (رایگان): {round(float(order.get('overused_volume_gb') or 0), 3)} گیگ\n"
+        f"📉 باقی‌مانده: {round(float(order.get('remaining_volume_mb') or 0) / 1024, 3)} گیگ\n"
         f"📍 وضعیت: {status_label(order.get('status'))}\n"
         f"♻️ نشان طرح تبدیل: {'فعال' if int(order.get('eligible_for_conversion') or 0) == 1 else 'غیرفعال'}\n"
         f"🕒 ثبت سفارش: {order.get('created_at') or '-'}\n"

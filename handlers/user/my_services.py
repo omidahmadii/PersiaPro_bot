@@ -31,17 +31,23 @@ def build_volume_section(service: dict) -> str:
             "📉 <b>حجم باقی‌مانده:</b> نامحدود"
         )
 
-    usage_mb = int(service.get("usage_total_mb") or 0)
+    usage_mb = int(service.get("usage_total_mb") or service.get("usage_effective_mb") or 0)
     usage_gb = max(usage_mb / 1024, 0)
     base_volume_gb = float(service.get("volume_gb") or 0)
     extra_volume_gb = float(service.get("extra_volume_gb") or 0)
-    total_volume_gb = base_volume_gb + extra_volume_gb
-    remaining_volume_gb = max(total_volume_gb - usage_gb, 0)
+    overused_volume_gb = float(service.get("overused_volume_gb") or 0)
+    total_volume_gb = base_volume_gb + extra_volume_gb + overused_volume_gb
+    remaining_volume_mb = service.get("remaining_volume_mb")
+    if remaining_volume_mb is not None:
+        remaining_volume_gb = max(float(remaining_volume_mb or 0) / 1024, 0)
+    else:
+        remaining_volume_gb = max(total_volume_gb - usage_gb, 0)
 
     return (
         f"📊 <b>مصرف:</b> {format_gb(usage_gb)} گیگ\n"
         f"📦 <b>حجم پایه:</b> {format_gb(base_volume_gb)} گیگ\n"
         f"➕ <b>حجم اضافه خریداری‌شده:</b> {format_gb(extra_volume_gb)} گیگ\n"
+        f"📌 <b>مصرف مازاد (رایگان):</b> {format_gb(overused_volume_gb)} گیگ\n"
         f"🧮 <b>مجموع حجم:</b> {format_gb(total_volume_gb)} گیگ\n"
         f"📉 <b>حجم باقی‌مانده:</b> {format_gb(remaining_volume_gb)} گیگ"
     )

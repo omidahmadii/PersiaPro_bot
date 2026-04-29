@@ -128,7 +128,7 @@ async def limit_speed_loop():
             print("limit speed loop Finished.")
         except Exception as e:
             print("Error during scheduler:", e)
-        await asyncio.sleep(30 * 60)
+        await asyncio.sleep(2 * 60)
 
 
 async def activate_waiting_for_payment_orders_loop():

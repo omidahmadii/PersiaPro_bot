@@ -1,4 +1,5 @@
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
+from typing import Optional
 
 from config import ADMINS
 from services.conversion_offer import get_conversion_menu_title, is_conversion_menu_enabled
@@ -19,6 +20,12 @@ def _activation_and_conversion_row() -> list[KeyboardButton]:
     return row
 
 
+def _conversion_row() -> Optional[list[KeyboardButton]]:
+    if not is_conversion_menu_enabled():
+        return None
+    return [KeyboardButton(text=get_conversion_menu_title())]
+
+
 def admin_main_menu_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -26,11 +33,10 @@ def admin_main_menu_keyboard():
             [KeyboardButton(text="⚡️ شارژ موقت"), KeyboardButton(text="👥 مدیریت کاربران")],
             [KeyboardButton(text="📢 ارسال پیام"), KeyboardButton(text="💳 مدیریت کارت‌ها")],
             [KeyboardButton(text="📦 مدیریت پلن‌ها"), KeyboardButton(text="🎯 مخاطب پلن‌ها")],
-            [KeyboardButton(text="📑 گزارشات"), KeyboardButton(text="🚀 فعال‌سازی سرویس ذخیره")],
+            [KeyboardButton(text="📑 گزارشات")],
             [KeyboardButton(text="🧩 ثبت سرویس دستی"), KeyboardButton(text="🧾 مدیریت سفارش‌ها")],
             [KeyboardButton(text="📚 مدیریت بسته‌های حجمی")],
             [KeyboardButton(text="🌐 مدیریت رکوردها"), KeyboardButton(text="⚙️ تنظیمات ربات")],
-            [KeyboardButton(text="تغییر رمز عبور")],
             [KeyboardButton(text="📂 سایر امکانات")],
         ],
         resize_keyboard=False,
@@ -39,10 +45,10 @@ def admin_main_menu_keyboard():
 
 def admin_other_features_keyboard():
     keyboard = [
-        [KeyboardButton(text="📄 تمدید سرویس"), KeyboardButton(text="🛒 خرید سرویس")],
+        [KeyboardButton(text="📄 تمدید"), KeyboardButton(text="🛒 خرید")],
         [KeyboardButton(text="👤 حساب کاربری"), KeyboardButton(text="📦 سرویس‌های من")],
-        [KeyboardButton(text="📦 خرید حجم اضافه"), KeyboardButton(text="💷 تعرفه ها")],
-        [KeyboardButton(text="🔁 انتقال مالکیت سرویس")],
+        [KeyboardButton(text="📦 حجم اضافه"), KeyboardButton(text="💷 تعرفه ها")],
+        [KeyboardButton(text="🔁 انتقال مالکیت"), KeyboardButton(text="🔐 تغییر رمز")],
         _activation_and_conversion_row(),
     ]
     keyboard.extend(
@@ -57,12 +63,13 @@ def admin_other_features_keyboard():
 
 def user_main_menu_keyboard():
     keyboard = [
-        [KeyboardButton(text="🛒 خرید سرویس"), KeyboardButton(text="📄 تمدید سرویس")],
-        [KeyboardButton(text="💳 شارژ حساب"), KeyboardButton(text="📦 خرید حجم اضافه")],
+        [KeyboardButton(text="🛒 خرید"), KeyboardButton(text="💳 شارژ حساب")],
+        [KeyboardButton(text="📦 حجم اضافه"), KeyboardButton(text="📄 تمدید")],
         [KeyboardButton(text="👤 حساب کاربری"), KeyboardButton(text="📦 سرویس‌های من")],
-        _activation_and_conversion_row(),
-        [KeyboardButton(text="🔁 انتقال مالکیت سرویس"), KeyboardButton(text="🔐 تغییر رمز سرویس")],
     ]
+    conversion_row = _conversion_row()
+    if conversion_row:
+        keyboard.append(conversion_row)
     keyboard.append([KeyboardButton(text="📂 سایر امکانات")])
     return ReplyKeyboardMarkup(
         keyboard=keyboard,
@@ -72,12 +79,14 @@ def user_main_menu_keyboard():
 
 
 def user_other_features_keyboard():
+    keyboard = [
+        [KeyboardButton(text="🔁 انتقال مالکیت"), KeyboardButton(text="🔐 تغییر رمز")],
+        [KeyboardButton(text="🚀 فعال‌سازی سرویس ذخیره"), KeyboardButton(text="💷 تعرفه ها")],
+        [KeyboardButton(text="🎫 پشتیبانی"), KeyboardButton(text="📚 آموزش")],
+        [KeyboardButton(text="❓ سوالات متداول"), KeyboardButton(text="📬 انتقادات و پیشنهادات")],
+        [KeyboardButton(text="⬅️ بازگشت به منوی اصلی")],
+    ]
     return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="💷 تعرفه ها"), KeyboardButton(text="🎫 پشتیبانی")],
-            [KeyboardButton(text="📚 آموزش"), KeyboardButton(text="❓ سوالات متداول")],
-            [KeyboardButton(text="📬 انتقادات و پیشنهادات")],
-            [KeyboardButton(text="⬅️ بازگشت به منوی اصلی")],
-        ],
+        keyboard=keyboard,
         resize_keyboard=True,
     )
