@@ -455,6 +455,19 @@ def initialize_runtime_settings_schema(cursor: sqlite3.Cursor) -> None:
                 """,
                 (replacement_value, setting_type, key),
             )
+            current_value = replacement_value
+
+        if setting_type == "text" and current_value is not None:
+            healed_value = _maybe_fix_mojibake_text(current_value)
+            if healed_value != current_value:
+                cursor.execute(
+                    """
+                    UPDATE app_settings
+                    SET value = ?, value_type = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE key = ?
+                    """,
+                    (healed_value, setting_type, key),
+                )
 
 
 def _connect() -> sqlite3.Connection:
@@ -485,11 +498,65 @@ def get_setting(key: str, fallback: Optional[str] = None) -> Optional[str]:
     return get_default_setting_value(key, fallback)
 
 
+_MOJIBAKE_CHARS = {
+    chr(c) for c in range(0x00C0, 0x0100)
+} | {
+    "\u0152",
+    "\u0153",
+    "\u0160",
+    "\u0178",
+    "\u017D",
+    "\u02DC",
+    "\u2013",
+    "\u2014",
+    "\u2018",
+    "\u2019",
+    "\u201A",
+    "\u201C",
+    "\u201D",
+    "\u201E",
+    "\u2020",
+    "\u2021",
+    "\u2026",
+    "\u2030",
+}
+
+
+def _maybe_fix_mojibake_text(value: str) -> str:
+    text = str(value or "")
+    if not text or not any(ch in _MOJIBAKE_CHARS for ch in text):
+        return text
+
+    bad_before = sum(1 for ch in text if ch in _MOJIBAKE_CHARS)
+    for encoding_name in ("cp1252", "latin1"):
+        try:
+            fixed = text.encode(encoding_name).decode("utf-8")
+        except Exception:
+            continue
+        if fixed == text:
+            continue
+
+        has_persian = bool(re.search(r"[\u0600-\u06FF]", fixed))
+        has_emoji = any(ord(ch) > 0xFFFF for ch in fixed)
+        bad_after = sum(1 for ch in fixed if ch in _MOJIBAKE_CHARS)
+        if (has_persian or has_emoji) and bad_after < bad_before:
+            return fixed
+
+    return text
+
+
 def get_text_setting(key: str, fallback: str = "") -> str:
     value = get_setting(key, fallback)
     if value is None:
         return fallback
-    return str(value)
+    text = str(value)
+    fixed_text = _maybe_fix_mojibake_text(text)
+    if fixed_text != text:
+        try:
+            set_setting(key, fixed_text, value_type="text")
+        except Exception:
+            pass
+    return fixed_text
 
 
 def _is_truthy(raw: Optional[str]) -> bool:

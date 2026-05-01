@@ -910,30 +910,11 @@ def apply_conversion(user_id: int, service_id: int) -> dict[str, Any]:
                 created_at,
                 status,
                 volume_gb,
-                extra_volume_gb,
-                overused_volume_gb,
-                usage_sent_mb,
-                usage_received_mb,
-                usage_total_mb,
                 remaining_volume_mb,
-                usage_last_update,
-                usage_applied_speed,
-                usage_notif_level,
-                starts_at,
-                expires_at,
-                last_notif_level,
-                is_renewal_of_order,
-                auto_renew,
-                eligible_for_conversion,
-                old_limited_service,
-                converted_by_offer,
-                converted_to_service_id,
                 replaced_from_service_id,
-                service_source,
-                closed_by_conversion_at,
-                last_conversion_notification_at
+                service_source
             )
-            VALUES (?, ?, ?, ?, ?, 'active', ?, 0, 0, 0, 0, ?, NULL, NULL, 0, NULL, NULL, NULL, ?, 0, 0, 0, 0, NULL, ?, ?, NULL, NULL)
+            VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
             """,
             (
                 int(service["user_id"]),
@@ -943,7 +924,6 @@ def apply_conversion(user_id: int, service_id: int) -> dict[str, Any]:
                 now_text,
                 int(config["new_volume_gb"]),
                 int(round(float(config["new_volume_gb"] or 0) * 1024)),
-                int(service["id"]),
                 int(service["id"]),
                 CONVERSION_SERVICE_SOURCE,
             ),

@@ -88,7 +88,7 @@ async def conversion_notifier_loop():
         try:
             await asyncio.to_thread(send_conversion_offer_notifications)
         except Exception as e:
-            print(f"Ø®Ø·Ø§ Ø¯Ø± Ø§Ø±Ø³Ø§Ù„ Ù¾ÛŒØ§Ù… Ø·Ø±Ø­ ØªØ¨Ø¯ÛŒÙ„: {e}")
+            print(f"خطا در ارسال پیام طرح تبدیل: {e}")
         await asyncio.sleep(15 * 60)
 
 

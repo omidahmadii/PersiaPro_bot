@@ -818,12 +818,12 @@ def get_buy_plans(user_id: Optional[int] = None):
 
 
 def get_renew_plans(user_id: Optional[int] = None):
-    """Ù¾Ù„Ù†â€ŒÙ‡Ø§ÛŒÛŒ Ú©Ù‡ Ø¨Ø±Ø§ÛŒ ØªÙ…Ø¯ÛŒØ¯ Ù†Ù…Ø§ÛŒØ´ Ø¯Ø§Ø¯Ù‡ Ù…ÛŒâ€ŒØ´ÙˆÙ†Ø¯"""
+    """پلن‌هایی که برای تمدید نمایش داده می‌شوند"""
     return _get_context_plans(display_context="renew", user_id=user_id)
 
 
 def get_agent_plans(user_id: Optional[int] = None):
-    """Ù¾Ù„Ù†â€ŒÙ‡Ø§ÛŒÛŒ Ú©Ù‡ Ø¨Ø±Ø§ÛŒ Ù†Ù…Ø§ÛŒÙ†Ø¯Ù‡â€ŒÙ‡Ø§ Ù†Ù…Ø§ÛŒØ´ Ø¯Ø§Ø¯Ù‡ Ù…ÛŒâ€ŒØ´ÙˆÙ†Ø¯"""
+    """پلن‌هایی که برای نماینده‌ها نمایش داده می‌شوند"""
     return _get_context_plans(display_context="agent", user_id=user_id)
 
 
@@ -1352,7 +1352,7 @@ def insert_order(user_id, plan_id, username, price, status, volume_gb):
                        INSERT INTO orders (user_id, plan_id, username, price, created_at, status, volume_gb, remaining_volume_mb)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                        ''', (user_id, plan_id, username, price, created_at, status, volume_gb, remaining_volume_mb))
-        order_id = cursor.lastrowid  # Ú¯Ø±ÙØªÙ† Ø¢ÛŒØ¯ÛŒ Ø¢Ø®Ø±ÛŒÙ† Ø±Ø¯ÛŒÙ ÙˆØ§Ø±Ø¯Ø´Ø¯Ù‡
+        order_id = cursor.lastrowid  # گرفتن آیدی آخرین ردیف واردشده
         conn.commit()
         return order_id
 
@@ -1366,7 +1366,7 @@ def insert_renewed_order(user_id, plan_id, username, price, status, is_renewal_o
                        INSERT INTO orders (user_id, plan_id, username, price, created_at, status, is_renewal_of_order, volume_gb, remaining_volume_mb)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                        ''', (user_id, plan_id, username, price, created_at, status, is_renewal_of_order, volume_gb, remaining_volume_mb))
-        order_id = cursor.lastrowid  # Ú¯Ø±ÙØªÙ† Ø¢ÛŒØ¯ÛŒ Ø¢Ø®Ø±ÛŒÙ† Ø±Ø¯ÛŒÙ ÙˆØ§Ø±Ø¯Ø´Ø¯Ù‡
+        order_id = cursor.lastrowid  # گرفتن آیدی آخرین ردیف واردشده
         conn.commit()
         return order_id
 
@@ -1382,7 +1382,7 @@ def insert_renewed_order_with_auto_renew(user_id, plan_id, username, price, stat
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                        ''', (
             user_id, plan_id, username, price, created_at, status, is_renewal_of_order, volume_gb, auto_renew, remaining_volume_mb))
-        order_id = cursor.lastrowid  # Ú¯Ø±ÙØªÙ† Ø¢ÛŒØ¯ÛŒ Ø¢Ø®Ø±ÛŒÙ† Ø±Ø¯ÛŒÙ ÙˆØ§Ø±Ø¯Ø´Ø¯Ù‡
+        order_id = cursor.lastrowid  # گرفتن آیدی آخرین ردیف واردشده
         conn.commit()
         return order_id
 
@@ -1454,7 +1454,7 @@ def get_user_balance(user_id: int) -> Optional[int]:
         return result[0] if result else 0
 
 
-# Ù¾ÛŒØ¯Ø§ Ú©Ø±Ø¯Ù† Ø§ÙˆÙ„ÛŒÙ† Ø§Ú©Ø§Ù†Øª Ø¢Ø²Ø§Ø¯
+# پیدا کردن اولین اکانت آزاد
 def find_free_account():
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
@@ -1463,10 +1463,10 @@ def find_free_account():
             WHERE status = 'free'
             LIMIT 1
         """)
-        return cursor.fetchone()  # Ø§Ú¯Ø± None Ø¨Ø±Ú¯Ø±Ø¯Ù‡ ÛŒØ¹Ù†ÛŒ Ø§Ú©Ø§Ù†Øª Ø¢Ø²Ø§Ø¯ Ù†ÛŒØ³Øª
+        return cursor.fetchone()  # اگر None برگرده یعنی اکانت آزاد نیست
 
 
-# Ø±Ø²Ø±Ùˆ Ø§Ú©Ø§Ù†Øª Ø¨Ø±Ø§ÛŒ ÛŒÚ© Ø³ÙØ§Ø±Ø´ Ø®Ø§Øµ
+# رزرو اکانت برای یک سفارش خاص
 def assign_account_to_order(account_id: int, order_id: Optional[int] = None):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
@@ -1486,7 +1486,7 @@ def assign_account_to_order(account_id: int, order_id: Optional[int] = None):
         conn.commit()
 
 
-# ØªØºÛŒÛŒØ± ÙˆØ¶Ø¹ÛŒØª Ø§Ú©Ø§Ù†Øª (Ù…Ø«Ù„Ø§Ù‹ Ø¢Ø²Ø§Ø¯ Ú©Ø±Ø¯Ù† Ø¨Ø¹Ø¯ Ø§Ø² Ø§Ù†Ù‚Ø¶Ø§)
+# تغییر وضعیت اکانت (مثلاً آزاد کردن بعد از انقضا)
 def update_account_status(account_id: int, new_status: str):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
@@ -1640,7 +1640,7 @@ def get_user_services_for_password_change(user_id: int):
 
 def get_active_orders_without_time() -> List[Dict]:
     conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row  # Ø®Ø±ÙˆØ¬ÛŒ Ø¨Ù‡ Ø´Ú©Ù„ dict
+    conn.row_factory = sqlite3.Row  # خروجی به شکل dict
     cur = conn.cursor()
 
     cur.execute("""
@@ -1691,7 +1691,7 @@ def expire_old_orders():
 
     for row in rows:
         try:
-            expires_at_str = row['expires_at']  # Ù…Ø«Ù„Ø§Ù‹: "1403-04-16 09:05"
+            expires_at_str = row['expires_at']  # مثلاً: "1403-04-16 09:05"
             expires_at = jdatetime.datetime.strptime(expires_at_str, "%Y-%m-%d %H:%M")
             now_jdt = jdatetime.datetime.strptime(now, "%Y-%m-%d %H:%M:%S")
 
@@ -1703,7 +1703,7 @@ def expire_old_orders():
                     WHERE id = ?
                 """, (row['id'],))
         except Exception as e:
-            print(f"Ø®Ø·Ø§ Ø¯Ø± Ø¨Ø±Ø±Ø³ÛŒ Ø³ÙØ§Ø±Ø´ {row['id']}: {e}")
+            print(f"خطا در بررسی سفارش {row['id']}: {e}")
 
     conn.commit()
     conn.close()
@@ -2817,7 +2817,7 @@ def set_order_expiry_to_now(expiry_str: str, service_id: int):
 
 
 def get_order_status(order_id: int) -> Optional[str]:
-    """Ø¨Ø±Ú¯Ø±Ø¯Ø§Ù†Ø¯Ù† ÙˆØ¶Ø¹ÛŒØª ÙØ¹Ù„ÛŒ Ø³ÙØ§Ø±Ø´ (status) Ø§Ø² Ø¬Ø¯ÙˆÙ„ orders"""
+    """برگرداندن وضعیت فعلی سفارش (status) از جدول orders"""
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.cursor()
         cur.execute("SELECT status FROM orders WHERE id = ?", (order_id,))
@@ -2827,7 +2827,7 @@ def get_order_status(order_id: int) -> Optional[str]:
 
 def get_plan_info(plan_id: int):
     with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row  # Ø®Ø±ÙˆØ¬ÛŒ Ø¨Ù‡ Ø´Ú©Ù„ dict
+        conn.row_factory = sqlite3.Row  # خروجی به شکل dict
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM plans WHERE id = ?", (plan_id,))
         row = cursor.fetchone()
@@ -2852,7 +2852,7 @@ def get_plan_price(plan_id: int) -> int:
 
 def get_auto_renew_orders():
     with sqlite3.connect(DB_PATH) as conn:
-        conn.row_factory = sqlite3.Row  # Ø®Ø±ÙˆØ¬ÛŒ Ø¨Ù‡ Ø´Ú©Ù„ dict
+        conn.row_factory = sqlite3.Row  # خروجی به شکل dict
         cursor = conn.cursor()
 
         now = jdatetime.datetime.now()
@@ -2955,7 +2955,7 @@ def get_user_display_name(user_id: int) -> str:
         row = cursor.fetchone()
 
         if not row:
-            return f"Ú©Ø§Ø±Ø¨Ø± {user_id}"
+            return f"کاربر {user_id}"
 
         first_name, username = row
 
@@ -2966,7 +2966,7 @@ def get_user_display_name(user_id: int) -> str:
         if username:
             return f"@{username}"
 
-        return f"Ú©Ø§Ø±Ø¨Ø± {user_id}"
+        return f"کاربر {user_id}"
 
 
 def get_distinct_usernames_by_user_id(user_id: int):
@@ -3108,7 +3108,7 @@ def transfer_orders_by_username_to_another_user(
         total_orders = row[0] if row else 0
 
         if total_orders == 0:
-            return False, "Ø¨Ø±Ø§ÛŒ Ø§ÛŒÙ† Ø§Ú©Ø§Ù†Øª Ø³ÙØ§Ø±Ø´ÛŒ Ù¾ÛŒØ¯Ø§ Ù†Ø´Ø¯.", 0
+            return False, "برای این اکانت سفارشی پیدا نشد.", 0
 
         cursor.execute("""
             UPDATE orders

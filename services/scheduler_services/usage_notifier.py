@@ -1,4 +1,4 @@
-﻿from services.db import get_orders_for_usage_notifications, update_order_usage_notif_level
+from services.db import get_orders_for_usage_notifications, update_order_usage_notif_level
 from services.scheduler_services.telegram_safe import send_scheduler_notification
 from services.usage_policy import get_post_limit_actions_text
 
@@ -31,33 +31,33 @@ def build_message(order: dict, level: int, current_percent: float, limit_mb: int
     message_name = (order.get("message_name") or "").strip()
     used_mb = int(order.get("usage_total_mb") or order.get("usage_effective_mb") or 0)
     remaining_mb = max(limit_mb - used_mb, 0)
-    greeting = f"{message_name} Ø¬Ø§Ù†" if message_name else "Ù…Ø´ØªØ±Ú© Ú¯Ø±Ø§Ù…ÛŒ"
+    greeting = f"{message_name} جان" if message_name else "مشترک گرامی"
     display_percent = format_percent(current_percent)
 
     if level >= 95:
         headline = (
-            f"Ù…ØµØ±Ù Ø³Ø±ÙˆÛŒØ³ <code>{username}</code> Ø§Ù„Ø§Ù† Ø¨Ù‡ <b>{display_percent}%</b> Ø±Ø³ÛŒØ¯Ù‡ "
-            "Ùˆ Ø¨Ù‡ Ø§Ù†ØªÙ‡Ø§ÛŒ Ø­Ø¬Ù… Ø®ÛŒÙ„ÛŒ Ù†Ø²Ø¯ÛŒÚ© Ø´Ø¯Ù‡ Ø§Ø³Øª."
+            f"مصرف سرویس <code>{username}</code> الان به <b>{display_percent}%</b> رسیده "
+            "و به انتهای حجم خیلی نزدیک شده است."
         )
         warning_text = (
             "⏳ مصرف این سرویس به آستانه اتمام حجم رسیده است.\n"
         )
     else:
         headline = (
-            f"Ù…ØµØ±Ù Ø³Ø±ÙˆÛŒØ³ <code>{username}</code> Ø§Ù„Ø§Ù† Ø¨Ù‡ <b>{display_percent}%</b> Ø±Ø³ÛŒØ¯Ù‡ "
-            f"Ùˆ Ø§Ø² Ù…Ø±Ø² Ù‡Ø´Ø¯Ø§Ø± <b>{level}%</b> Ø¹Ø¨ÙˆØ± Ú©Ø±Ø¯Ù‡ Ø§Ø³Øª."
+            f"مصرف سرویس <code>{username}</code> الان به <b>{display_percent}%</b> رسیده "
+            f"و از مرز هشدار <b>{level}%</b> عبور کرده است."
         )
         warning_text = (
-            "âš ï¸ Ø¨Ø¹Ø¯ Ø§Ø² Ø§ØªÙ…Ø§Ù… Ø­Ø¬Ù…ØŒ Ø³Ø±Ø¹Øª Ø§ÛŒÙ† Ø³Ø±ÙˆÛŒØ³ Ù…Ø­Ø¯ÙˆØ¯ Ù…ÛŒâ€ŒØ´ÙˆØ¯.\n"
+            "⚠️ بعد از اتمام حجم، سرعت این سرویس محدود می‌شود.\n"
         )
 
     return (
-        f"ðŸ“Š <b>{greeting}</b>\n\n"
+        f"📊 <b>{greeting}</b>\n\n"
         f"{headline}\n"
-        f"ðŸ“ˆ Ù…ØµØ±Ù ÙØ¹Ù„ÛŒ: <b>{format_gb_from_mb(used_mb)} Ú¯ÛŒÚ¯</b>\n"
-        f"ðŸ“¦ Ø­Ø¬Ù… Ú©Ù„: <b>{format_gb_from_mb(limit_mb)} Ú¯ÛŒÚ¯</b>\n"
-        f"ðŸ“‰ Ø­Ø¬Ù… Ø¨Ø§Ù‚ÛŒâ€ŒÙ…Ø§Ù†Ø¯Ù‡: <b>{format_gb_from_mb(remaining_mb)} Ú¯ÛŒÚ¯</b>\n"
-        f"ðŸ”¢ Ø¯Ø±ØµØ¯ ÙØ¹Ù„ÛŒ Ù…ØµØ±Ù: <b>{display_percent}%</b>\n\n"
+        f"📈 مصرف فعلی: <b>{format_gb_from_mb(used_mb)} گیگ</b>\n"
+        f"📦 حجم کل: <b>{format_gb_from_mb(limit_mb)} گیگ</b>\n"
+        f"📉 حجم باقی‌مانده: <b>{format_gb_from_mb(remaining_mb)} گیگ</b>\n"
+        f"🔢 درصد فعلی مصرف: <b>{display_percent}%</b>\n\n"
         f"{warning_text}"
         f"{get_post_limit_actions_text()}"
     )
@@ -99,4 +99,4 @@ def notify_usage_thresholds():
                 continue
             update_order_usage_notif_level(level_needed=level_needed, order_id=order["id"])
         except Exception as exc:
-            print(f"âš ï¸ Failed to send usage notification for order {order.get('id')}: {exc}")
+            print(f"⚠️ Failed to send usage notification for order {order.get('id')}: {exc}")
