@@ -31,8 +31,10 @@ from services.payment_workflow import (
     set_accounting_source_card_last4,
     set_accounting_transfer_datetime,
 )
+from services.telegram_message_utils import send_photo_with_details
 
 router = Router()
+UNKNOWN_DESTINATION_CARD_KEY = "unknown"
 
 
 class AccountingTxn(StatesGroup):
@@ -119,15 +121,176 @@ def parse_transfer_datetime_input(
     return date_value, time_value
 
 
+def transaction_destination_card_key(txn: dict) -> str:
+    return normalize_card_number(txn.get("destination_card_number")) or UNKNOWN_DESTINATION_CARD_KEY
+
+
+def transaction_display_name(txn: dict) -> str:
+    full_name = " ".join(part for part in [txn.get("first_name") or "", txn.get("last_name") or ""] if part).strip()
+    username = (txn.get("username") or "").strip()
+    label = full_name or (f"@{username}" if username else "")
+    if label:
+        return label[:12].strip()
+    return ""
+
+
+def transaction_display_datetime(txn: dict) -> str:
+    transfer_date = (txn.get("transfer_date") or "").strip()
+    transfer_time = (txn.get("transfer_time") or "").strip()
+    if transfer_date and transfer_time:
+        return f"{transfer_date} {transfer_time}"
+    return transfer_date or transfer_time or "نامشخص"
+
+
+def transaction_duplicate_mark(txn: dict) -> str:
+    return " !" if int(txn.get("is_duplicate_suspect") or 0) == 1 else ""
+
+
+def transaction_transfer_sort_key(txn: dict) -> tuple[int, tuple[int, int, int], tuple[int, int], int]:
+    raw_date = normalize_digits((txn.get("transfer_date") or "").strip())
+    raw_time = normalize_digits((txn.get("transfer_time") or "").strip())
+
+    date_parts = [part for part in raw_date.replace("-", "/").split("/") if part]
+    time_parts = [part for part in raw_time.split(":") if part]
+
+    date_tuple = (9999, 99, 99)
+    time_tuple = (99, 99)
+    has_complete_datetime = len(date_parts) == 3 and len(time_parts) == 2
+
+    if len(date_parts) == 3:
+        try:
+            date_tuple = tuple(int(part) for part in date_parts[:3])
+        except Exception:
+            date_tuple = (9999, 99, 99)
+
+    if len(time_parts) == 2:
+        try:
+            time_tuple = tuple(int(part) for part in time_parts[:2])
+        except Exception:
+            time_tuple = (99, 99)
+
+    return (0 if has_complete_datetime else 1, date_tuple, time_tuple, int(txn.get("id") or 0))
+
+
+def build_accounting_card_groups(transactions: list[dict]) -> list[dict]:
+    groups_by_key: dict[str, dict] = {}
+
+    for txn in transactions:
+        card_key = transaction_destination_card_key(txn)
+        group = groups_by_key.setdefault(
+            card_key,
+            {
+                "key": card_key,
+                "card_number": txn.get("destination_card_number"),
+                "bank_name": (txn.get("destination_bank_name") or "").strip() or None,
+                "owner_name": (txn.get("destination_card_owner") or "").strip() or None,
+                "transactions": [],
+                "total_amount": 0,
+            },
+        )
+        if not group.get("card_number") and txn.get("destination_card_number"):
+            group["card_number"] = txn.get("destination_card_number")
+        if not group.get("bank_name") and (txn.get("destination_bank_name") or "").strip():
+            group["bank_name"] = (txn.get("destination_bank_name") or "").strip()
+        if not group.get("owner_name") and (txn.get("destination_card_owner") or "").strip():
+            group["owner_name"] = (txn.get("destination_card_owner") or "").strip()
+
+        group["transactions"].append(txn)
+        group["total_amount"] += int(txn.get("amount") or 0)
+
+    groups = []
+    for group in groups_by_key.values():
+        sorted_transactions = sorted(group["transactions"], key=transaction_transfer_sort_key)
+        groups.append(
+            {
+                **group,
+                "transactions": sorted_transactions,
+                "count": len(sorted_transactions),
+            }
+        )
+
+    return sorted(
+        groups,
+        key=lambda group: (
+            transaction_transfer_sort_key(group["transactions"][0]) if group["transactions"] else (1, (9999, 99, 99), (99, 99), 0),
+            group["key"],
+        ),
+    )
+
+
+def find_accounting_card_group(transactions: list[dict], card_key: str) -> Optional[dict]:
+    for group in build_accounting_card_groups(transactions):
+        if group["key"] == card_key:
+            return group
+    return None
+
+
+def build_accounting_group_button_text(group: dict) -> str:
+    parts = [
+        f"🏦 {mask_card(group.get('card_number'))}",
+        f"{group['count']} تراکنش",
+        format_price(group.get("total_amount") or 0),
+    ]
+    bank_name = (group.get("bank_name") or "").strip()
+    if bank_name:
+        parts.append(bank_name)
+    return " | ".join(parts)
+
+
+def build_accounting_transaction_button_text(txn: dict) -> str:
+    parts = [
+        transaction_display_datetime(txn),
+        format_price(txn.get("amount") or 0),
+    ]
+    button_text = " ".join(parts)
+    return f"{button_text}{transaction_duplicate_mark(txn)}"
+
+
+def build_accounting_txn_callback(action: str, txn_id: int, card_key: Optional[str] = None) -> str:
+    if card_key:
+        return f"acct|{action}|{txn_id}|{card_key}"
+    return f"acct|{action}|{txn_id}"
+
+
+def parse_accounting_txn_callback(data: str) -> tuple[int, Optional[str]]:
+    parts = data.split("|", 3)
+    txn_id = int(parts[2])
+    card_key = parts[3] if len(parts) > 3 else None
+    return txn_id, card_key
+
+
 def accounting_queue_keyboard(transactions: list[dict]) -> InlineKeyboardMarkup:
     rows = []
-    for txn in transactions:
-        duplicate_mark = " ⚠️" if int(txn.get("is_duplicate_suspect") or 0) == 1 else ""
-        button_text = (
-            f"#{txn['id']} | {format_price(txn.get('amount') or 0)} | "
-            f"{txn.get('username') or txn.get('first_name') or txn['user_id']}{duplicate_mark}"
+    for group in build_accounting_card_groups(transactions):
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=build_accounting_group_button_text(group)[:64],
+                    callback_data=f"acct|card|{group['key']}",
+                )
+            ]
         )
-        rows.append([InlineKeyboardButton(text=button_text[:64], callback_data=f"acct|open|{txn['id']}")])
+    rows.append([InlineKeyboardButton(text="↩️ کسر از حساب / برگشت وجه", callback_data="acct|approved_list")])
+    rows.append([InlineKeyboardButton(text="🔙 منوی اصلی", callback_data="acct|main_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def accounting_card_transactions_keyboard(card_key: str, transactions: list[dict]) -> InlineKeyboardMarkup:
+    rows = []
+    for txn in transactions:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=build_accounting_transaction_button_text(txn)[:64],
+                    callback_data=build_accounting_txn_callback("open", int(txn["id"]), card_key),
+                ),
+                InlineKeyboardButton(
+                    text="✅",
+                    callback_data=build_accounting_txn_callback("approve", int(txn["id"]), card_key),
+                ),
+            ]
+        )
+    rows.append([InlineKeyboardButton(text="🔙 لیست کارت‌ها", callback_data="acct|list")])
     rows.append([InlineKeyboardButton(text="↩️ کسر از حساب / برگشت وجه", callback_data="acct|approved_list")])
     rows.append([InlineKeyboardButton(text="🔙 منوی اصلی", callback_data="acct|main_menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -146,29 +309,30 @@ def approved_transactions_keyboard(transactions: list[dict]) -> InlineKeyboardMa
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def accounting_review_keyboard(txn_id: int) -> InlineKeyboardMarkup:
+def accounting_review_keyboard(txn_id: int, card_key: Optional[str] = None) -> InlineKeyboardMarkup:
+    back_callback = f"acct|card|{card_key}" if card_key else "acct|list"
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="✅ تایید حسابداری", callback_data=f"acct|approve|{txn_id}")],
-            [InlineKeyboardButton(text="✏️ ویرایش اطلاعات", callback_data=f"acct|edit|{txn_id}")],
-            [InlineKeyboardButton(text="❌ عدم تطبیق / رد", callback_data=f"acct|reject|{txn_id}")],
-            [InlineKeyboardButton(text="🔙 لیست حسابداری", callback_data="acct|list")],
+            [InlineKeyboardButton(text="✅ تایید حسابداری", callback_data=build_accounting_txn_callback("approve", txn_id, card_key))],
+            [InlineKeyboardButton(text="✏️ ویرایش اطلاعات", callback_data=build_accounting_txn_callback("edit", txn_id, card_key))],
+            [InlineKeyboardButton(text="❌ عدم تطبیق / رد", callback_data=build_accounting_txn_callback("reject", txn_id, card_key))],
+            [InlineKeyboardButton(text="🔙 لیست حسابداری", callback_data=back_callback)],
         ]
     )
 
 
-def accounting_edit_keyboard(txn_id: int) -> InlineKeyboardMarkup:
+def accounting_edit_keyboard(txn_id: int, card_key: Optional[str] = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="💳 ویرایش ۴ رقم آخر", callback_data=f"acct|edit_last4|{txn_id}")],
-            [InlineKeyboardButton(text="🏦 تغییر کارت مقصد", callback_data=f"acct|edit_dest|{txn_id}")],
-            [InlineKeyboardButton(text="⏱ تغییر زمان واریز", callback_data=f"acct|edit_time|{txn_id}")],
-            [InlineKeyboardButton(text="🔙 بازگشت به تراکنش", callback_data=f"acct|open|{txn_id}")],
+            [InlineKeyboardButton(text="💳 ویرایش ۴ رقم آخر", callback_data=build_accounting_txn_callback("edit_last4", txn_id, card_key))],
+            [InlineKeyboardButton(text="🏦 تغییر کارت مقصد", callback_data=build_accounting_txn_callback("edit_dest", txn_id, card_key))],
+            [InlineKeyboardButton(text="⏱ تغییر زمان واریز", callback_data=build_accounting_txn_callback("edit_time", txn_id, card_key))],
+            [InlineKeyboardButton(text="🔙 بازگشت به تراکنش", callback_data=build_accounting_txn_callback("open", txn_id, card_key))],
         ]
     )
 
 
-def accounting_destination_card_keyboard(txn_id: int) -> InlineKeyboardMarkup:
+def accounting_destination_card_keyboard(txn_id: int, card_key: Optional[str] = None) -> InlineKeyboardMarkup:
     rows = []
     for card in get_receipt_bank_cards():
         label = f"{mask_card(card['card_number'])} | {card.get('bank_name') or '-'}"
@@ -181,7 +345,7 @@ def accounting_destination_card_keyboard(txn_id: int) -> InlineKeyboardMarkup:
             ]
         )
     rows.append([InlineKeyboardButton(text="✏️ کارت در لیست نیست", callback_data=f"acct|dest_card|{txn_id}|manual")])
-    rows.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"acct|edit|{txn_id}")])
+    rows.append([InlineKeyboardButton(text="🔙 بازگشت", callback_data=build_accounting_txn_callback("edit", txn_id, card_key))])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -209,7 +373,17 @@ def duplicate_lines(txn_id: int) -> str:
     return "\n".join(lines)
 
 
-def build_accounting_caption(txn: dict, title: str) -> str:
+def build_accounting_photo_caption(txn: dict, title: str) -> str:
+    name = " ".join(part for part in [txn.get("first_name") or "", txn.get("last_name") or ""] if part).strip() or "-"
+    return (
+        f"🏦 <b>{title} #{txn['id']}</b>\n"
+        f"👤 کاربر: <a href='tg://user?id={txn['user_id']}'>{txn['user_id']} {name}</a>\n"
+        f"📌 وضعیت: <b>{get_transaction_status_label(txn.get('status'))}</b>\n"
+        f"💰 مبلغ شارژشده: <b>{format_price(txn.get('amount') or 0)} تومان</b>"
+    )
+
+
+def build_accounting_details(txn: dict, title: str) -> str:
     name = " ".join(part for part in [txn.get("first_name") or "", txn.get("last_name") or ""] if part).strip() or "-"
     admin_name = txn.get("admin_reviewed_by") or "-"
     lines = [
@@ -251,8 +425,35 @@ async def show_accounting_queue(message: Message, state: FSMContext) -> None:
         return
 
     await message.answer(
-        "تراکنش‌های در انتظار تایید حسابداری:",
+        "کارت‌هایی که تراکنش در انتظار تایید حسابداری دارند:",
         reply_markup=accounting_queue_keyboard(txns),
+    )
+
+
+async def show_accounting_card_transactions(message: Message, state: FSMContext, card_key: str) -> None:
+    await state.clear()
+    txns = list_transactions_by_status(STATUS_APPROVED_PENDING_ACCOUNTING)
+    group = find_accounting_card_group(txns, card_key)
+    if not group:
+        await message.answer("برای این کارت دیگر تراکنش تاییدنشده‌ای باقی نمانده است.")
+        await show_accounting_queue(message, state)
+        return
+
+    lines = [
+        "تراکنش‌های در انتظار این کارت:",
+        f"🏦 کارت مقصد: <b>{mask_card(group.get('card_number'))}</b>",
+        f"📦 تعداد تراکنش: <b>{group['count']}</b>",
+        f"💰 جمع مبالغ: <b>{format_price(group.get('total_amount') or 0)} تومان</b>",
+    ]
+    bank_name = (group.get("bank_name") or "").strip()
+    owner_name = (group.get("owner_name") or "").strip()
+    if bank_name or owner_name:
+        lines.append(f"🏷 کارت/بانک: <b>{bank_name or '-'}</b> | <b>{owner_name or '-'}</b>")
+
+    await message.answer(
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=accounting_card_transactions_keyboard(card_key, group["transactions"]),
     )
 
 
@@ -272,17 +473,19 @@ async def show_approved_transactions(message: Message, state: FSMContext) -> Non
     )
 
 
-async def show_accounting_review(message: Message, txn_id: int) -> None:
+async def show_accounting_review(message: Message, txn_id: int, card_key: Optional[str] = None) -> None:
     txn = get_transaction_with_user(txn_id)
     if not txn or txn.get("status") != STATUS_APPROVED_PENDING_ACCOUNTING:
         await message.answer("این تراکنش دیگر در صف حسابداری نیست.")
         return
 
-    await message.answer_photo(
-        txn["photo_id"],
-        caption=build_accounting_caption(txn, "بررسی حسابداری تراکنش"),
-        parse_mode="HTML",
-        reply_markup=accounting_review_keyboard(txn_id),
+    resolved_card_key = card_key or transaction_destination_card_key(txn)
+    await send_photo_with_details(
+        message,
+        photo=txn["photo_id"],
+        caption=build_accounting_photo_caption(txn, "بررسی حسابداری تراکنش"),
+        details=build_accounting_details(txn, "بررسی حسابداری تراکنش"),
+        reply_markup=accounting_review_keyboard(txn_id, resolved_card_key),
     )
 
 
@@ -292,17 +495,23 @@ async def show_approved_review(message: Message, txn_id: int) -> None:
         await message.answer("این تراکنش دیگر برای کسر از حساب در دسترس نیست.")
         return
 
-    await message.answer_photo(
-        txn["photo_id"],
-        caption=build_accounting_caption(txn, "تراکنش تاییدشده"),
-        parse_mode="HTML",
+    await send_photo_with_details(
+        message,
+        photo=txn["photo_id"],
+        caption=build_accounting_photo_caption(txn, "تراکنش تاییدشده"),
+        details=build_accounting_details(txn, "تراکنش تاییدشده"),
         reply_markup=approved_review_keyboard(txn_id),
     )
 
 
 async def show_pending_review_after_edit(message: Message, state: FSMContext, txn_id: int) -> None:
     await state.clear()
-    await show_accounting_review(message, txn_id)
+    txn = get_transaction_with_user(txn_id)
+    await show_accounting_review(
+        message,
+        txn_id,
+        transaction_destination_card_key(txn) if txn else None,
+    )
 
 
 @router.message(F.text == "🏦 تایید حسابداری")
@@ -317,6 +526,15 @@ async def accounting_list_callback(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         return await callback.answer("دسترسی نداری.", show_alert=True)
     await show_accounting_queue(callback.message, state)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("acct|card|"))
+async def accounting_card_callback(callback: CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return await callback.answer("دسترسی نداری.", show_alert=True)
+    card_key = callback.data.split("|", 2)[2]
+    await show_accounting_card_transactions(callback.message, state, card_key)
     await callback.answer()
 
 
@@ -341,9 +559,9 @@ async def accounting_main_menu(callback: CallbackQuery, state: FSMContext):
 async def accounting_open(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         return await callback.answer("دسترسی نداری.", show_alert=True)
-    txn_id = int(callback.data.split("|")[2])
+    txn_id, card_key = parse_accounting_txn_callback(callback.data)
     await state.clear()
-    await show_accounting_review(callback.message, txn_id)
+    await show_accounting_review(callback.message, txn_id, card_key)
     await callback.answer()
 
 
@@ -362,15 +580,16 @@ async def accounting_edit_menu(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         return await callback.answer("دسترسی نداری.", show_alert=True)
 
-    txn_id = int(callback.data.split("|")[2])
+    txn_id, card_key = parse_accounting_txn_callback(callback.data)
     txn = get_transaction_with_user(txn_id)
     if not txn or txn.get("status") != STATUS_APPROVED_PENDING_ACCOUNTING:
         return await callback.answer("این تراکنش دیگر در صف حسابداری نیست.", show_alert=True)
 
+    resolved_card_key = card_key or transaction_destination_card_key(txn)
     await state.clear()
     await callback.message.answer(
         f"ویرایش اطلاعات تراکنش #{txn_id}:",
-        reply_markup=accounting_edit_keyboard(txn_id),
+        reply_markup=accounting_edit_keyboard(txn_id, resolved_card_key),
     )
     await callback.answer()
 
@@ -380,13 +599,13 @@ async def accounting_edit_last4_start(callback: CallbackQuery, state: FSMContext
     if not is_admin(callback.from_user.id):
         return await callback.answer("دسترسی نداری.", show_alert=True)
 
-    txn_id = int(callback.data.split("|")[2])
+    txn_id, card_key = parse_accounting_txn_callback(callback.data)
     txn = get_transaction_with_user(txn_id)
     if not txn or txn.get("status") != STATUS_APPROVED_PENDING_ACCOUNTING:
         return await callback.answer("این تراکنش دیگر در صف حسابداری نیست.", show_alert=True)
 
     await state.clear()
-    await state.update_data(txn_id=txn_id)
+    await state.update_data(txn_id=txn_id, card_key=card_key or transaction_destination_card_key(txn))
     await state.set_state(AccountingTxn.waiting_for_source_last4)
     await callback.message.answer(
         "۴ رقم آخر کارت مبدا را بفرست.\nبرای پاک کردن، «ندارم» را بفرست."
@@ -399,15 +618,16 @@ async def accounting_edit_destination_start(callback: CallbackQuery, state: FSMC
     if not is_admin(callback.from_user.id):
         return await callback.answer("دسترسی نداری.", show_alert=True)
 
-    txn_id = int(callback.data.split("|")[2])
+    txn_id, card_key = parse_accounting_txn_callback(callback.data)
     txn = get_transaction_with_user(txn_id)
     if not txn or txn.get("status") != STATUS_APPROVED_PENDING_ACCOUNTING:
         return await callback.answer("این تراکنش دیگر در صف حسابداری نیست.", show_alert=True)
 
+    resolved_card_key = card_key or transaction_destination_card_key(txn)
     await state.clear()
     await callback.message.answer(
         "کارت مقصد جدید را انتخاب کن:",
-        reply_markup=accounting_destination_card_keyboard(txn_id),
+        reply_markup=accounting_destination_card_keyboard(txn_id, resolved_card_key),
     )
     await callback.answer()
 
@@ -425,7 +645,7 @@ async def accounting_edit_destination_finish(callback: CallbackQuery, state: FSM
 
     if value == "manual":
         await state.clear()
-        await state.update_data(txn_id=txn_id)
+        await state.update_data(txn_id=txn_id, card_key=transaction_destination_card_key(txn))
         await state.set_state(AccountingTxn.waiting_for_destination_card_manual)
         await callback.message.answer(
             "شماره کامل کارت مقصد را بفرست.\nمثال: <code>6037123412341234</code>",
@@ -445,13 +665,13 @@ async def accounting_edit_transfer_time_start(callback: CallbackQuery, state: FS
     if not is_admin(callback.from_user.id):
         return await callback.answer("دسترسی نداری.", show_alert=True)
 
-    txn_id = int(callback.data.split("|")[2])
+    txn_id, card_key = parse_accounting_txn_callback(callback.data)
     txn = get_transaction_with_user(txn_id)
     if not txn or txn.get("status") != STATUS_APPROVED_PENDING_ACCOUNTING:
         return await callback.answer("این تراکنش دیگر در صف حسابداری نیست.", show_alert=True)
 
     await state.clear()
-    await state.update_data(txn_id=txn_id)
+    await state.update_data(txn_id=txn_id, card_key=card_key or transaction_destination_card_key(txn))
     await state.set_state(AccountingTxn.waiting_for_transfer_datetime)
     await callback.message.answer(
         "زمان واریز جدید را بفرست.\n"
@@ -467,7 +687,7 @@ async def accounting_approve(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         return await callback.answer("دسترسی نداری.", show_alert=True)
 
-    txn_id = int(callback.data.split("|")[2])
+    txn_id, card_key = parse_accounting_txn_callback(callback.data)
     approved = confirm_transaction_accounting(txn_id, callback.from_user.id)
     if not approved:
         return await callback.answer("این تراکنش دیگر در صف حسابداری نیست.", show_alert=True)
@@ -477,6 +697,10 @@ async def accounting_approve(callback: CallbackQuery, state: FSMContext):
         f"💰 مبلغ: {format_price(approved.get('amount') or 0)} تومان"
     )
     await state.clear()
+    if card_key:
+        await show_accounting_card_transactions(callback.message, state, card_key)
+    else:
+        await show_accounting_queue(callback.message, state)
     await callback.answer("تایید شد.")
 
 
@@ -485,13 +709,13 @@ async def accounting_reject_start(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         return await callback.answer("دسترسی نداری.", show_alert=True)
 
-    txn_id = int(callback.data.split("|")[2])
+    txn_id, card_key = parse_accounting_txn_callback(callback.data)
     txn = get_transaction_with_user(txn_id)
     if not txn or txn.get("status") != STATUS_APPROVED_PENDING_ACCOUNTING:
         return await callback.answer("این تراکنش دیگر در صف حسابداری نیست.", show_alert=True)
 
     await state.clear()
-    await state.update_data(txn_id=txn_id)
+    await state.update_data(txn_id=txn_id, card_key=card_key or transaction_destination_card_key(txn))
     await state.set_state(AccountingTxn.waiting_for_reject_reason)
     await callback.message.answer(
         f"دلیل عدم تطبیق/رد حسابداری برای تراکنش #{txn_id} را وارد کن:"
@@ -627,6 +851,7 @@ async def accounting_reject_finish(message: Message, state: FSMContext):
 
     data = await state.get_data()
     txn_id = data.get("txn_id")
+    card_key = data.get("card_key")
     reason = (message.text or "").strip()
     if not txn_id or not reason:
         await message.answer("❌ دلیل را وارد کن.")
@@ -644,6 +869,10 @@ async def accounting_reject_finish(message: Message, state: FSMContext):
         f"💳 موجودی فعلی کاربر بعد از اصلاح: {format_price(user_balance)} تومان"
     )
     await state.clear()
+    if card_key:
+        await show_accounting_card_transactions(message, state, str(card_key))
+    else:
+        await show_accounting_queue(message, state)
 
 
 @router.message(AccountingTxn.waiting_for_revert_reason)

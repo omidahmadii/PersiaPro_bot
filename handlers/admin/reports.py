@@ -1,3 +1,4 @@
+import logging
 import sqlite3
 from html import escape
 from typing import Iterable, Optional, Tuple, Union
@@ -35,6 +36,40 @@ from services.payment_workflow import (
 )
 
 router = Router()
+logger = logging.getLogger(__name__)
+
+TELEGRAM_TEXT_LIMIT = 3900
+
+ORDER_SALES_STATUSES = (
+    "active",
+    "expired",
+    "waiting_for_renewal",
+    "waiting_for_renewal_not_paid",
+    "reserved",
+    "renewed",
+    "converted",
+    "archived",
+)
+
+FINAL_DEPOSIT_STATUSES = (
+    STATUS_ACCOUNTING_APPROVED,
+    STATUS_LEGACY_APPROVED,
+)
+
+JALALI_MONTH_NAMES = (
+    "فروردین",
+    "اردیبهشت",
+    "خرداد",
+    "تیر",
+    "مرداد",
+    "شهریور",
+    "مهر",
+    "آبان",
+    "آذر",
+    "دی",
+    "بهمن",
+    "اسفند",
+)
 
 
 class ReportUserTx(StatesGroup):
@@ -135,9 +170,8 @@ def _current_month_filters():
 
 VOLUME_COMMITMENT_STATUSES = (
     "active",
-    "waiting_for_renewal",
-    "waiting_for_renewal_not_paid",
     "reserved",
+    "waiting_for_payment",
 )
 
 
@@ -149,10 +183,98 @@ def _table_exists(cur: sqlite3.Cursor, table_name: str) -> bool:
     return bool(row)
 
 
+def _quote_identifier(value: str) -> str:
+    return f'"{value.replace(chr(34), chr(34) + chr(34))}"'
+
+
+def _table_columns(cur: sqlite3.Cursor, table_name: str) -> list[str]:
+    return [row[1] for row in cur.execute(f"PRAGMA table_info({_quote_identifier(table_name)})").fetchall()]
+
+
+def _select_columns_for_union(table_name: str, output_columns: list[str], table_columns: set[str]) -> str:
+    parts = []
+    for column in output_columns:
+        quoted_column = _quote_identifier(column)
+        if column in table_columns:
+            parts.append(quoted_column)
+        else:
+            parts.append(f"NULL AS {quoted_column}")
+    return f"SELECT {', '.join(parts)} FROM {_quote_identifier(table_name)}"
+
+
 def _orders_source_sql(cur: sqlite3.Cursor, alias: str = "o", include_archive: bool = True) -> str:
     if include_archive and _table_exists(cur, "orders_archive"):
-        return f"(SELECT * FROM orders UNION ALL SELECT * FROM orders_archive) {alias}"
+        orders_columns = _table_columns(cur, "orders")
+        archive_columns = _table_columns(cur, "orders_archive")
+        output_columns = orders_columns + [column for column in archive_columns if column not in orders_columns]
+        orders_sql = _select_columns_for_union("orders", output_columns, set(orders_columns))
+        archive_sql = _select_columns_for_union("orders_archive", output_columns, set(archive_columns))
+        return f"({orders_sql} UNION ALL {archive_sql}) {alias}"
     return f"orders {alias}"
+
+
+def _jalali_month_bounds(year: int, month: int) -> tuple[str, str, str]:
+    month_start_j = jdatetime.datetime(year, month, 1)
+    if month == 12:
+        next_month_start_j = jdatetime.datetime(year + 1, 1, 1)
+    else:
+        next_month_start_j = jdatetime.datetime(year, month + 1, 1)
+    return (
+        month_start_j.togregorian().strftime("%Y-%m-%d"),
+        next_month_start_j.togregorian().strftime("%Y-%m-%d"),
+        f"{year}/{month:02d}",
+    )
+
+
+def _jalali_year_bounds(year: int) -> tuple[str, str]:
+    start_j = jdatetime.datetime(year, 1, 1)
+    next_start_j = jdatetime.datetime(year + 1, 1, 1)
+    return (
+        start_j.togregorian().strftime("%Y-%m-%d"),
+        next_start_j.togregorian().strftime("%Y-%m-%d"),
+    )
+
+
+def _mask_card_number(value: Optional[str]) -> str:
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    if len(digits) < 10:
+        return escape(digits or "نامشخص")
+    return escape(f"{digits[:6]}******{digits[-4:]}")
+
+
+def _split_report_text(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> list[str]:
+    if len(text) <= limit:
+        return [text]
+
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for line in text.splitlines():
+        line_len = len(line) + 1
+        if current and current_len + line_len > limit:
+            chunks.append("\n".join(current))
+            current = []
+            current_len = 0
+        if line_len > limit:
+            chunks.append(line[:limit])
+            remainder = line[limit:]
+            while len(remainder) > limit:
+                chunks.append(remainder[:limit])
+                remainder = remainder[limit:]
+            if remainder:
+                current = [remainder]
+                current_len = len(remainder) + 1
+            continue
+        current.append(line)
+        current_len += line_len
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
+async def _send_report_message(message: Message, text: str) -> None:
+    for part in _split_report_text(text):
+        await message.answer(part, parse_mode="HTML")
 
 
 def _fmt_gb(value: Optional[float], decimals: int = 3) -> str:
@@ -174,6 +296,14 @@ def reports_keyboard() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(text="📦 تعهد حجمی", callback_data="report:volume_commitment"),
                 InlineKeyboardButton(text="📊 داشبورد ماه", callback_data="report:dashboard_month"),
+            ],
+            [
+                InlineKeyboardButton(text="📈 فروش ماهانه امسال", callback_data="report:sales_monthly_current_year"),
+                InlineKeyboardButton(text="📉 فروش ماهانه پارسال", callback_data="report:sales_monthly_previous_year"),
+            ],
+            [
+                InlineKeyboardButton(text="🏦 واریزی حساب‌ها امسال", callback_data="report:deposits_by_account_current_year"),
+                InlineKeyboardButton(text="🏦 واریزی حساب‌ها ماه", callback_data="report:deposits_by_account_month"),
             ],
             [
                 InlineKeyboardButton(text="🧾 سفارش‌ها", callback_data="report:orders_overview"),
@@ -227,20 +357,29 @@ def build_env_status_report() -> str:
 def _fetch_volume_commitment_data(conn: sqlite3.Connection) -> tuple[sqlite3.Row, list[sqlite3.Row]]:
     cur = conn.cursor()
     status_placeholders = ", ".join("?" for _ in VOLUME_COMMITMENT_STATUSES)
+    commitment_gb_sql = "(COALESCE(o.volume_gb, 0) + COALESCE(o.extra_volume_gb, 0))"
+    is_unlimited_sql = "COALESCE(p.is_unlimited, 0)"
 
     cur.execute(
         f"""
         SELECT
             COUNT(*) AS services_count,
+            COALESCE(SUM(CASE WHEN {is_unlimited_sql} = 0 THEN 1 ELSE 0 END), 0) AS limited_services_count,
+            COALESCE(SUM(CASE WHEN {is_unlimited_sql} = 1 THEN 1 ELSE 0 END), 0) AS unlimited_services_count,
             COALESCE(SUM(COALESCE(o.volume_gb, 0)), 0) AS base_volume_gb,
             COALESCE(SUM(COALESCE(o.extra_volume_gb, 0)), 0) AS extra_volume_gb,
-            COALESCE(SUM(COALESCE(o.overused_volume_gb, 0)), 0) AS overused_volume_gb,
+            COALESCE(SUM({commitment_gb_sql}), 0) AS total_commitment_gb,
             COALESCE(SUM(COALESCE(o.usage_total_mb, 0)) / 1024.0, 0) AS used_volume_gb,
-            COALESCE(SUM(COALESCE(o.remaining_volume_mb, 0)) / 1024.0, 0) AS remaining_volume_gb
+            COALESCE(SUM(COALESCE(o.remaining_volume_mb, 0)) / 1024.0, 0) AS remaining_volume_gb,
+            COALESCE(SUM(CASE WHEN {is_unlimited_sql} = 1 THEN {commitment_gb_sql} ELSE 0 END), 0) AS unlimited_commitment_gb,
+            COALESCE(SUM(CASE WHEN {is_unlimited_sql} = 1 THEN COALESCE(o.usage_total_mb, 0) ELSE 0 END) / 1024.0, 0) AS unlimited_used_volume_gb,
+            COALESCE(SUM(CASE WHEN {is_unlimited_sql} = 1 THEN COALESCE(o.remaining_volume_mb, 0) ELSE 0 END) / 1024.0, 0) AS unlimited_remaining_volume_gb,
+            COALESCE(SUM(CASE WHEN {is_unlimited_sql} = 0 THEN {commitment_gb_sql} ELSE 0 END), 0) AS limited_commitment_gb,
+            COALESCE(SUM(CASE WHEN {is_unlimited_sql} = 0 THEN COALESCE(o.usage_total_mb, 0) ELSE 0 END) / 1024.0, 0) AS limited_used_volume_gb,
+            COALESCE(SUM(CASE WHEN {is_unlimited_sql} = 0 THEN COALESCE(o.remaining_volume_mb, 0) ELSE 0 END) / 1024.0, 0) AS limited_remaining_volume_gb
         FROM orders o
-        JOIN plans p ON p.id = o.plan_id
+        LEFT JOIN plans p ON p.id = o.plan_id
         WHERE o.status IN ({status_placeholders})
-          AND COALESCE(p.is_unlimited, 0) = 0
         """,
         VOLUME_COMMITMENT_STATUSES,
     )
@@ -250,18 +389,16 @@ def _fetch_volume_commitment_data(conn: sqlite3.Connection) -> tuple[sqlite3.Row
         f"""
         SELECT
             COALESCE(p.name, 'پلن حذف‌شده') AS plan_name,
+            {is_unlimited_sql} AS is_unlimited,
             COUNT(*) AS services_count,
-            COALESCE(SUM(COALESCE(o.volume_gb, 0)), 0) AS base_volume_gb,
-            COALESCE(SUM(COALESCE(o.extra_volume_gb, 0)), 0) AS extra_volume_gb,
-            COALESCE(SUM(COALESCE(o.overused_volume_gb, 0)), 0) AS overused_volume_gb,
+            COALESCE(SUM({commitment_gb_sql}), 0) AS total_commitment_gb,
             COALESCE(SUM(COALESCE(o.usage_total_mb, 0)) / 1024.0, 0) AS used_volume_gb,
             COALESCE(SUM(COALESCE(o.remaining_volume_mb, 0)) / 1024.0, 0) AS remaining_volume_gb
         FROM orders o
-        JOIN plans p ON p.id = o.plan_id
+        LEFT JOIN plans p ON p.id = o.plan_id
         WHERE o.status IN ({status_placeholders})
-          AND COALESCE(p.is_unlimited, 0) = 0
-        GROUP BY p.id, COALESCE(p.name, 'پلن حذف‌شده')
-        ORDER BY remaining_volume_gb DESC, services_count DESC
+        GROUP BY p.id, COALESCE(p.name, 'پلن حذف‌شده'), {is_unlimited_sql}
+        ORDER BY is_unlimited DESC, total_commitment_gb DESC, remaining_volume_gb DESC, services_count DESC
         """,
         VOLUME_COMMITMENT_STATUSES,
     )
@@ -269,43 +406,95 @@ def _fetch_volume_commitment_data(conn: sqlite3.Connection) -> tuple[sqlite3.Row
     return summary, rows
 
 
+def _format_volume_commitment_value(summary: sqlite3.Row) -> str:
+    total_commitment_gb = float(summary["total_commitment_gb"] or 0)
+    remaining_gb = float(summary["remaining_volume_gb"] or 0)
+    return f"{_fmt_gb(total_commitment_gb)} گیگ | باقی‌مانده: {_fmt_gb(remaining_gb)} گیگ"
+
+
 def build_volume_commitment_report(conn: sqlite3.Connection) -> str:
     summary, rows = _fetch_volume_commitment_data(conn)
     services_count = int(summary["services_count"] or 0)
+    limited_services_count = int(summary["limited_services_count"] or 0)
+    unlimited_services_count = int(summary["unlimited_services_count"] or 0)
     base_gb = float(summary["base_volume_gb"] or 0)
     extra_gb = float(summary["extra_volume_gb"] or 0)
-    overused_gb = float(summary["overused_volume_gb"] or 0)
     used_gb = float(summary["used_volume_gb"] or 0)
+    limited_commitment_gb = float(summary["limited_commitment_gb"] or 0)
+    limited_used_gb = float(summary["limited_used_volume_gb"] or 0)
+    limited_remaining_gb = float(summary["limited_remaining_volume_gb"] or 0)
+    unlimited_commitment_gb = float(summary["unlimited_commitment_gb"] or 0)
+    unlimited_used_gb = float(summary["unlimited_used_volume_gb"] or 0)
+    unlimited_remaining_gb = float(summary["unlimited_remaining_volume_gb"] or 0)
     remaining_gb = float(summary["remaining_volume_gb"] or 0)
-    total_capacity_gb = max(base_gb + extra_gb + overused_gb, 0.0)
-    remaining_pct = (remaining_gb * 100.0 / total_capacity_gb) if total_capacity_gb > 0 else 0.0
+    total_commitment_gb = max(float(summary["total_commitment_gb"] or 0), 0.0)
+    unlimited_rows = [row for row in rows if int(row["is_unlimited"] or 0) == 1]
+    limited_rows = [row for row in rows if int(row["is_unlimited"] or 0) == 0]
 
     lines = [
         "📦 گزارش تعهد حجمی",
         "",
-        f"تعداد سرویس‌های حجمی فعال: <b>{_fmt_num(services_count)}</b>",
+        "مبنای تعهد: <code>volume_gb + extra_volume_gb</code>",
+        "وضعیت‌های لحاظ‌شده: فعال، رزرو، در انتظار پرداخت",
+        "",
+        f"تعداد سرویس‌های مشمول تعهد: <b>{_fmt_num(services_count)}</b>",
         f"حجم پایه فروخته‌شده: <b>{_fmt_gb(base_gb)}</b> گیگ",
         f"حجم افزونه (هدیه/خرید): <b>{_fmt_gb(extra_gb)}</b> گیگ",
-        f"حجم مصرف آزاد اضافه‌شده: <b>{_fmt_gb(overused_gb)}</b> گیگ",
-        f"کل ظرفیت فعال فعلی: <b>{_fmt_gb(total_capacity_gb)}</b> گیگ",
-        f"حجم مصرف‌شده: <b>{_fmt_gb(used_gb)}</b> گیگ",
-        f"حجم باقی‌مانده: <b>{_fmt_gb(remaining_gb)}</b> گیگ",
-        f"تعهد حجمی جاری: <b>{_fmt_gb(remaining_gb)}</b> گیگ ({remaining_pct:.1f}% از ظرفیت فعال)",
-        "",
-        "جزئیات به تفکیک پلن:",
+        f"کل تعهد حجمی فعال: <b>{_fmt_gb(total_commitment_gb)}</b> گیگ",
+        f"حجم مصرف‌شده فعلی: <b>{_fmt_gb(used_gb)}</b> گیگ",
+        f"حجم باقی‌مانده کل: <b>{_fmt_gb(remaining_gb)}</b> گیگ",
     ]
 
-    if rows:
-        for index, row in enumerate(rows, start=1):
+    def append_section(
+        title: str,
+        section_rows: list[sqlite3.Row],
+        count: int,
+        commitment_gb: float,
+        used_section_gb: float,
+        remaining_section_gb: float,
+    ) -> None:
+        lines.extend(
+            [
+                "",
+                title,
+                f"تعداد: <b>{_fmt_num(count)}</b>",
+                f"تعهد: <b>{_fmt_gb(commitment_gb)}</b> گیگ",
+                f"مصرف: <b>{_fmt_gb(used_section_gb)}</b> گیگ",
+                f"باقی‌مانده: <b>{_fmt_gb(remaining_section_gb)}</b> گیگ",
+            ]
+        )
+
+        if not section_rows:
+            lines.append("موردی برای این بخش پیدا نشد.")
+            return
+
+        lines.append("جزئیات به تفکیک پلن:")
+        for index, row in enumerate(section_rows, start=1):
             plan_name = escape(str(row["plan_name"] or "-"))
-            total_plan_gb = float(row["base_volume_gb"] or 0) + float(row["extra_volume_gb"] or 0) + float(row["overused_volume_gb"] or 0)
+            commitment_gb = float(row["total_commitment_gb"] or 0)
             lines.append(
                 f"{index}. {plan_name} | تعداد: {_fmt_num(row['services_count'])} | "
-                f"باقی‌مانده: {_fmt_gb(row['remaining_volume_gb'])} گیگ | "
-                f"کل ظرفیت: {_fmt_gb(total_plan_gb)} گیگ"
+                f"تعهد: {_fmt_gb(commitment_gb)} گیگ | "
+                f"مصرف: {_fmt_gb(row['used_volume_gb'])} گیگ | "
+                f"باقی‌مانده: {_fmt_gb(row['remaining_volume_gb'])} گیگ"
             )
-    else:
-        lines.append("سرویس حجمی فعالی برای گزارش پیدا نشد.")
+
+    append_section(
+        "♾ سرویس‌های دارای گزینه is_unlimited",
+        unlimited_rows,
+        unlimited_services_count,
+        unlimited_commitment_gb,
+        unlimited_used_gb,
+        unlimited_remaining_gb,
+    )
+    append_section(
+        "📦 سرویس‌های بدون گزینه is_unlimited",
+        limited_rows,
+        limited_services_count,
+        limited_commitment_gb,
+        limited_used_gb,
+        limited_remaining_gb,
+    )
 
     return "\n".join(lines)
 
@@ -342,8 +531,8 @@ def build_management_snapshot_report(conn: sqlite3.Connection) -> str:
     positive_wallet = cur.fetchone()["total"]
 
     commitment_summary, _ = _fetch_volume_commitment_data(conn)
-    remaining_gb = float(commitment_summary["remaining_volume_gb"] or 0)
     commitment_services = int(commitment_summary["services_count"] or 0)
+    commitment_unlimited_services = int(commitment_summary["unlimited_services_count"] or 0)
 
     return "\n".join(
         [
@@ -358,8 +547,9 @@ def build_management_snapshot_report(conn: sqlite3.Connection) -> str:
             f"تراکنش در انتظار بررسی اولیه: <b>{_fmt_num(pending_tx)}</b>",
             f"جمع موجودی مثبت کیف پول: <b>{_fmt_num(positive_wallet)}</b> تومان",
             "",
-            f"تعهد حجمی جاری: <b>{_fmt_gb(remaining_gb)}</b> گیگ",
-            f"تعداد سرویس‌های حجمی فعال: <b>{_fmt_num(commitment_services)}</b>",
+            f"تعهد حجمی جاری: <b>{_format_volume_commitment_value(commitment_summary)}</b>",
+            f"تعداد سرویس‌های مشمول تعهد: <b>{_fmt_num(commitment_services)}</b>",
+            f"سرویس‌های با رفتار نامحدود: <b>{_fmt_num(commitment_unlimited_services)}</b>",
         ]
     )
 
@@ -474,7 +664,6 @@ def build_dashboard_month_report(conn: sqlite3.Connection) -> str:
     cur.execute("SELECT COUNT(*) AS cnt, COALESCE(SUM(balance), 0) AS total FROM users WHERE balance > 0")
     wallet_row = cur.fetchone()
     commitment_summary, _ = _fetch_volume_commitment_data(conn)
-    remaining_commitment_gb = float(commitment_summary["remaining_volume_gb"] or 0)
 
     return "\n".join(
         [
@@ -497,11 +686,162 @@ def build_dashboard_month_report(conn: sqlite3.Connection) -> str:
             f"در انتظار تمدید: <b>{_fmt_num(waiting_for_renewal)}</b>",
             f"در انتظار پرداخت: <b>{_fmt_num(waiting_for_payment)}</b>",
             f"تراکنش در انتظار بررسی اولیه: <b>{_fmt_num(pending_transactions)}</b>",
-            f"تعهد حجمی جاری: <b>{_fmt_gb(remaining_commitment_gb)}</b> گیگ",
+            f"تعهد حجمی جاری: <b>{_format_volume_commitment_value(commitment_summary)}</b>",
             "",
             f"کاربران دارای موجودی: <b>{_fmt_num(wallet_row['cnt'])}</b>",
             f"جمع موجودی کیف پول کاربران: <b>{_fmt_num(wallet_row['total'])}</b> تومان",
         ]
+    )
+
+
+def _fetch_monthly_order_sales(conn: sqlite3.Connection, year: int) -> list[dict]:
+    cur = conn.cursor()
+    orders_source = _orders_source_sql(cur, alias="o", include_archive=True)
+    status_placeholders = ", ".join("?" for _ in ORDER_SALES_STATUSES)
+
+    rows: list[dict] = []
+    for month in range(1, 13):
+        greg_start, greg_end, period_label = _jalali_month_bounds(year, month)
+        cur.execute(
+            f"""
+            SELECT COUNT(*) AS cnt, COALESCE(SUM(price), 0) AS total
+            FROM {orders_source}
+            WHERE COALESCE(status, '') IN ({status_placeholders})
+              AND COALESCE(price, 0) > 0
+              AND substr(created_at, 1, 10) >= ?
+              AND substr(created_at, 1, 10) < ?
+            """,
+            (*ORDER_SALES_STATUSES, greg_start, greg_end),
+        )
+        row = cur.fetchone()
+        rows.append(
+            {
+                "month": month,
+                "month_name": JALALI_MONTH_NAMES[month - 1],
+                "period_label": period_label,
+                "count": int(row["cnt"] or 0),
+                "total": int(row["total"] or 0),
+                "greg_start": greg_start,
+                "greg_end": greg_end,
+            }
+        )
+    return rows
+
+
+def build_monthly_sales_report(conn: sqlite3.Connection, year: int) -> str:
+    rows = _fetch_monthly_order_sales(conn, year)
+    now_j = jdatetime.datetime.now()
+    through_month = now_j.month if year == now_j.year else 12
+    visible_rows = [row for row in rows if row["month"] <= through_month]
+    if not visible_rows:
+        visible_rows = rows
+
+    total_count = sum(row["count"] for row in visible_rows)
+    total_amount = sum(row["total"] for row in visible_rows)
+    months_with_sales = [row for row in visible_rows if row["total"] > 0]
+    best_month = max(months_with_sales, key=lambda row: row["total"], default=None)
+    average_monthly = int(total_amount / max(len(visible_rows), 1))
+    year_start_greg, year_end_greg = _jalali_year_bounds(year)
+    scope_note = "تا امروز" if year == now_j.year else "کل سال"
+
+    lines = [
+        f"📈 گزارش فروش ماهانه {year}",
+        "",
+        "مبنای فروش: سفارش‌های پرداخت‌شده/واقعی با مبلغ مثبت؛ سفارش‌های در انتظار پرداخت و لغوشده حذف شده‌اند.",
+        f"بازه میلادی متناظر: <code>{year_start_greg}</code> تا <code>{year_end_greg}</code>",
+        f"دامنه گزارش: <b>{scope_note}</b>",
+        "",
+        f"جمع فروش: <b>{_fmt_num(total_amount)}</b> تومان",
+        f"تعداد سفارش فروش: <b>{_fmt_num(total_count)}</b>",
+        f"میانگین ماهانه: <b>{_fmt_num(average_monthly)}</b> تومان",
+    ]
+
+    if best_month:
+        lines.append(
+            f"بهترین ماه: <b>{best_month['month_name']}</b> با {_fmt_num(best_month['total'])} تومان"
+        )
+
+    lines.extend(["", "جزئیات ماه‌ها:"])
+    for row in visible_rows:
+        lines.append(
+            f"• {row['month_name']} {row['period_label']}: "
+            f"<b>{_fmt_num(row['total'])}</b> تومان | {_fmt_num(row['count'])} سفارش"
+        )
+
+    return "\n".join(lines)
+
+
+def build_deposits_by_account_report(conn: sqlite3.Connection, period_label: str, greg_start: str, greg_end: str) -> str:
+    cur = conn.cursor()
+    status_placeholders = ", ".join("?" for _ in FINAL_DEPOSIT_STATUSES)
+    date_expr = "substr(COALESCE(accounting_reviewed_at, submitted_at, created_at), 1, 10)"
+
+    cur.execute(
+        f"""
+        SELECT
+            COALESCE(NULLIF(TRIM(destination_card_number), ''), 'نامشخص') AS card_number,
+            COALESCE(NULLIF(TRIM(destination_card_owner), ''), 'نامشخص') AS owner_name,
+            COALESCE(NULLIF(TRIM(destination_bank_name), ''), 'نامشخص') AS bank_name,
+            COUNT(*) AS cnt,
+            COALESCE(SUM(amount), 0) AS total
+        FROM transactions
+        WHERE status IN ({status_placeholders})
+          AND COALESCE(amount, 0) > 0
+          AND {date_expr} >= ?
+          AND {date_expr} < ?
+        GROUP BY
+            COALESCE(NULLIF(TRIM(destination_card_number), ''), 'نامشخص'),
+            COALESCE(NULLIF(TRIM(destination_card_owner), ''), 'نامشخص'),
+            COALESCE(NULLIF(TRIM(destination_bank_name), ''), 'نامشخص')
+        ORDER BY total DESC, cnt DESC
+        """,
+        (*FINAL_DEPOSIT_STATUSES, greg_start, greg_end),
+    )
+    rows = cur.fetchall()
+
+    total_count = sum(int(row["cnt"] or 0) for row in rows)
+    total_amount = sum(int(row["total"] or 0) for row in rows)
+
+    lines = [
+        f"🏦 گزارش واریزی به حساب‌ها | {period_label}",
+        "",
+        "مبنای گزارش: تراکنش‌های تایید نهایی حسابداری و تاییدهای قدیمی؛ تاریخ موثر = تایید حسابداری، سپس ثبت/ارسال در سیستم.",
+        f"بازه میلادی متناظر: <code>{greg_start}</code> تا <code>{greg_end}</code>",
+        "",
+        f"جمع واریزی: <b>{_fmt_num(total_amount)}</b> تومان",
+        f"تعداد تراکنش: <b>{_fmt_num(total_count)}</b>",
+        "",
+        "تفکیک به حساب مقصد:",
+    ]
+
+    if rows:
+        for index, row in enumerate(rows, start=1):
+            owner_name = escape(str(row["owner_name"] or "نامشخص"))
+            bank_name = escape(str(row["bank_name"] or "نامشخص"))
+            card_number = _mask_card_number(row["card_number"])
+            lines.append(
+                f"{index}. {bank_name} | {owner_name} | <code>{card_number}</code> | "
+                f"{_fmt_num(row['cnt'])} تراکنش | <b>{_fmt_num(row['total'])}</b> تومان"
+            )
+    else:
+        lines.append("در این بازه واریزی تاییدشده‌ای ثبت نشده.")
+
+    return "\n".join(lines)
+
+
+def build_deposits_by_account_current_year_report(conn: sqlite3.Connection) -> str:
+    now_j = jdatetime.datetime.now()
+    greg_start, greg_end = _jalali_year_bounds(now_j.year)
+    return build_deposits_by_account_report(conn, f"سال {now_j.year} تا امروز", greg_start, greg_end)
+
+
+def build_deposits_by_account_month_report(conn: sqlite3.Connection) -> str:
+    filters = _current_month_filters()
+    return build_deposits_by_account_report(
+        conn,
+        f"ماه {filters['period_label']}",
+        filters["greg_start"],
+        filters["greg_end"],
     )
 
 
@@ -1088,49 +1428,51 @@ async def report_handler(callback: CallbackQuery, state: FSMContext):
         return await callback.answer("دسترسی نداری.", show_alert=True)
 
     action = callback.data.split(":", 1)[1]
-    if action == "env_status":
-        text = build_env_status_report()
-    elif action == "management_snapshot":
-        with _connect() as conn:
-            text = build_management_snapshot_report(conn)
-    elif action == "volume_commitment":
-        with _connect() as conn:
-            text = build_volume_commitment_report(conn)
-    elif action == "dashboard_month":
-        with _connect() as conn:
-            text = build_dashboard_month_report(conn)
-    elif action == "orders_overview":
-        with _connect() as conn:
-            text = build_orders_overview_report(conn)
-    elif action == "wallet_overview":
-        with _connect() as conn:
-            text = build_wallet_overview_report(conn)
-    elif action == "top_plans":
-        with _connect() as conn:
-            text = build_top_plans_report(conn)
-    elif action == "users_overview":
-        with _connect() as conn:
-            text = build_users_overview_report(conn)
-    elif action == "expiring_overview":
-        with _connect() as conn:
-            text = build_expiring_overview_report(conn)
-    elif action == "feedback_overview":
-        with _connect() as conn:
-            text = build_feedback_overview_report(conn)
-    elif action == "user_balances":
-        with _connect() as conn:
-            text = build_user_balances_report(conn)
-    elif action == "user_transactions":
+    if action == "user_transactions":
         await state.set_state(ReportUserTx.waiting_for_userid)
         await callback.message.answer("🔎 لطفاً آیدی عددی کاربر را ارسال کنید:")
         await callback.answer()
         return
-    else:
+
+    now_j = jdatetime.datetime.now()
+
+    def with_conn(builder):
+        with _connect() as conn:
+            return builder(conn)
+
+    report_builders = {
+        "env_status": build_env_status_report,
+        "management_snapshot": lambda: with_conn(build_management_snapshot_report),
+        "volume_commitment": lambda: with_conn(build_volume_commitment_report),
+        "dashboard_month": lambda: with_conn(build_dashboard_month_report),
+        "sales_monthly_current_year": lambda: with_conn(lambda conn: build_monthly_sales_report(conn, now_j.year)),
+        "sales_monthly_previous_year": lambda: with_conn(lambda conn: build_monthly_sales_report(conn, now_j.year - 1)),
+        "deposits_by_account_current_year": lambda: with_conn(build_deposits_by_account_current_year_report),
+        "deposits_by_account_month": lambda: with_conn(build_deposits_by_account_month_report),
+        "orders_overview": lambda: with_conn(build_orders_overview_report),
+        "wallet_overview": lambda: with_conn(build_wallet_overview_report),
+        "top_plans": lambda: with_conn(build_top_plans_report),
+        "users_overview": lambda: with_conn(build_users_overview_report),
+        "expiring_overview": lambda: with_conn(build_expiring_overview_report),
+        "feedback_overview": lambda: with_conn(build_feedback_overview_report),
+        "user_balances": lambda: with_conn(build_user_balances_report),
+    }
+
+    builder = report_builders.get(action)
+    if not builder:
         await callback.answer("گزارش نامعتبر است.", show_alert=True)
         return
 
-    await callback.message.answer(text, parse_mode="HTML")
     await callback.answer()
+    try:
+        text = builder()
+        await _send_report_message(callback.message, text)
+    except Exception:
+        logger.exception("Failed to build admin report: %s", action)
+        await callback.message.answer(
+            "⚠️ در ساخت این گزارش خطا رخ داد، اما دکمه بی‌پاسخ نماند.\n"
+            "جزئیات خطا در لاگ ثبت شد تا بتوانیم ریشه‌اش را بررسی کنیم."
+        )
 
 
 @router.message(ReportUserTx.waiting_for_userid)
@@ -1144,11 +1486,17 @@ async def process_user_transactions(message: Message, state: FSMContext):
         await message.answer("⚠️ لطفاً فقط آیدی عددی وارد کنید.")
         return
 
-    report = build_user_detail_report(int(user_id_text))
-    await state.clear()
+    try:
+        report = build_user_detail_report(int(user_id_text))
+    except Exception:
+        logger.exception("Failed to build admin user detail report for user_id=%s", user_id_text)
+        await state.clear()
+        await message.answer("⚠️ در ساخت گزارش کاربر خطا رخ داد. جزئیات در لاگ ثبت شد.")
+        return
 
+    await state.clear()
     if not report:
         await message.answer("کاربری با این آیدی در سیستم پیدا نشد.")
         return
 
-    await message.answer(report, parse_mode="HTML")
+    await _send_report_message(message, report)

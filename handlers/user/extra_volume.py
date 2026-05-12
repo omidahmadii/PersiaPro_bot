@@ -64,9 +64,20 @@ def services_keyboard(services: list[dict]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def sort_volume_packages(packages: list[dict]) -> list[dict]:
+    return sorted(
+        packages,
+        key=lambda package: (
+            int(package.get("volume_gb") or 0),
+            -int(package.get("sort_order") or 0),
+            int(package.get("id") or 0),
+        ),
+    )
+
+
 def packages_keyboard(packages: list[dict]) -> InlineKeyboardMarkup:
     rows = []
-    for package in packages:
+    for package in sort_volume_packages(packages):
         rows.append([
             InlineKeyboardButton(
                 text=f"{package['name']} | {package['volume_gb']} گیگ | {format_price(package['price'])} تومان",

@@ -21,6 +21,7 @@ from services.payment_workflow import (
     list_transactions_by_status,
     reject_transaction_initial,
 )
+from services.telegram_message_utils import send_photo_with_details
 
 router = Router()
 
@@ -122,7 +123,18 @@ def build_duplicate_lines(txn_id: int) -> str:
     return "\n".join(lines)
 
 
-def build_review_caption(txn: dict) -> str:
+def build_review_photo_caption(txn: dict) -> str:
+    name = " ".join(part for part in [txn.get("first_name") or "", txn.get("last_name") or ""] if part).strip() or "-"
+    duplicate_header = "بله" if int(txn.get("is_duplicate_suspect") or 0) == 1 else "خیر"
+    return (
+        f"🧾 <b>بررسی تراکنش #{txn['id']}</b>\n"
+        f"👤 کاربر: <a href='tg://user?id={txn['user_id']}'>{txn['user_id']} {name}</a>\n"
+        f"💰 مبلغ اعلامی: <b>{format_price(txn.get('amount_claimed') or 0)} تومان</b>\n"
+        f"⚠️ مشکوک به تکرار: <b>{duplicate_header}</b>"
+    )
+
+
+def build_review_details(txn: dict) -> str:
     name = " ".join(part for part in [txn.get("first_name") or "", txn.get("last_name") or ""] if part).strip() or "-"
     duplicate_header = "بله" if int(txn.get("is_duplicate_suspect") or 0) == 1 else "خیر"
     return (
@@ -157,10 +169,11 @@ async def show_transaction_review(message: Message, txn_id: int) -> None:
         await message.answer("این تراکنش قبلاً بررسی شده یا دیگر در صف اولیه نیست.")
         return
 
-    await message.answer_photo(
-        txn["photo_id"],
-        caption=build_review_caption(txn),
-        parse_mode="HTML",
+    await send_photo_with_details(
+        message,
+        photo=txn["photo_id"],
+        caption=build_review_photo_caption(txn),
+        details=build_review_details(txn),
         reply_markup=review_keyboard(txn_id),
     )
 
@@ -182,8 +195,8 @@ async def finalize_rejection(
     await message.answer(f"تراکنش #{txn_id} رد شد.")
     await bot.send_message(
         int(rejected["user_id"]),
-        f"❌ فیش شما رد شد.\nدلیل: {reason}\n"
-        "اگر نیاز به ثبت مجدد دارید می‌توانید دوباره فیش را همراه با اطلاعات کامل ارسال کنید.",
+        f"❌ فیش ارسالی شما تایید نشد.\nدلیل: {reason}\n"
+        "در صورت تمایل، می‌توانید پس از بررسی، فیش را مجدداً ارسال فرمایید.",
     )
     await state.clear()
     return True
@@ -249,8 +262,8 @@ async def approve_with_claimed_amount(callback: CallbackQuery, state: FSMContext
     )
     await bot.send_message(
         int(approved["user_id"]),
-        f"✅ فیش شما تایید شد و {format_price(approved.get('amount') or 0)} تومان به کیف پول شما اضافه شد.\n"
-        f"💳 موجودی فعلی: {format_price(user_balance)} تومان",
+        f"✅ فیش ارسالی شما تایید شد و مبلغ {format_price(approved.get('amount') or 0)} تومان به کیف پول شما افزوده شد.\n"
+        f"💳 موجودی فعلی شما: {format_price(user_balance)} تومان",
     )
     await state.clear()
     await callback.answer("تایید شد.")
@@ -282,8 +295,8 @@ async def approve_with_claimed_amount_and_accounting(callback: CallbackQuery, st
     )
     await bot.send_message(
         int(approved["user_id"]),
-        f"✅ فیش شما تایید نهایی شد و {format_price(approved.get('amount') or 0)} تومان به کیف پول شما اضافه شد.\n"
-        f"💳 موجودی فعلی: {format_price(user_balance)} تومان",
+        f"✅ فیش ارسالی شما به صورت نهایی تایید شد و مبلغ {format_price(approved.get('amount') or 0)} تومان به کیف پول شما افزوده شد.\n"
+        f"💳 موجودی فعلی شما: {format_price(user_balance)} تومان",
     )
     await state.clear()
     await callback.answer("تایید شد.")
@@ -348,8 +361,8 @@ async def receive_custom_amount(message: Message, state: FSMContext, bot: Bot):
     )
     await bot.send_message(
         int(approved["user_id"]),
-        f"✅ فیش شما تایید شد و {format_price(approved.get('amount') or 0)} تومان به کیف پول شما اضافه شد.\n"
-        f"💳 موجودی فعلی: {format_price(user_balance)} تومان",
+        f"✅ فیش ارسالی شما تایید شد و مبلغ {format_price(approved.get('amount') or 0)} تومان به کیف پول شما افزوده شد.\n"
+        f"💳 موجودی فعلی شما: {format_price(user_balance)} تومان",
     )
     await state.clear()
 

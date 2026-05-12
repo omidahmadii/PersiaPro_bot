@@ -19,6 +19,23 @@ ACTIVE_REVIEWABLE_STATUSES = {
     STATUS_APPROVED_PENDING_ACCOUNTING,
 }
 
+PHOTO_HASH_APPROVED_STATUSES = {
+    STATUS_ACCOUNTING_APPROVED,
+    STATUS_LEGACY_APPROVED,
+}
+
+PHOTO_HASH_IN_PROGRESS_STATUSES = {
+    STATUS_PENDING_ADMIN,
+    STATUS_APPROVED_PENDING_ACCOUNTING,
+    STATUS_LEGACY_PENDING,
+}
+
+PHOTO_HASH_RETRYABLE_STATUSES = {
+    STATUS_REJECTED,
+    STATUS_ACCOUNTING_REJECTED,
+    STATUS_BALANCE_REVERSED,
+}
+
 PERSIAN_DIGITS = str.maketrans("\u06f0\u06f1\u06f2\u06f3\u06f4\u06f5\u06f6\u06f7\u06f8\u06f9", "0123456789")
 LTR_EMBED_START = "\u202A"
 LTR_EMBED_END = "\u202C"
@@ -176,6 +193,50 @@ def get_transaction(txn_id: int) -> Optional[Dict]:
         cur.execute("SELECT * FROM transactions WHERE id = ? LIMIT 1", (txn_id,))
         row = cur.fetchone()
         return dict(row) if row else None
+
+
+def get_photo_hash_submission_state(photo_hash: Optional[str]) -> Optional[Dict]:
+    clean_hash = (photo_hash or "").strip()
+    if not clean_hash:
+        return None
+
+    with _connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT *
+            FROM transactions
+            WHERE photo_hash = ?
+              AND status != ?
+            ORDER BY id DESC
+            """,
+            (clean_hash, STATUS_DRAFT),
+        )
+        rows = [dict(row) for row in cur.fetchall()]
+
+    if not rows:
+        return None
+
+    def _first_by_status(statuses: set[str]) -> Optional[Dict]:
+        for row in rows:
+            status = (row.get("status") or "").strip().lower()
+            if status in statuses:
+                return row
+        return None
+
+    approved_txn = _first_by_status(PHOTO_HASH_APPROVED_STATUSES)
+    if approved_txn:
+        return {"result": "approved", "transaction": approved_txn}
+
+    in_progress_txn = _first_by_status(PHOTO_HASH_IN_PROGRESS_STATUSES)
+    if in_progress_txn:
+        return {"result": "in_progress", "transaction": in_progress_txn}
+
+    retryable_txn = _first_by_status(PHOTO_HASH_RETRYABLE_STATUSES)
+    if retryable_txn:
+        return {"result": "retryable", "transaction": retryable_txn}
+
+    return {"result": "unknown", "transaction": rows[0]}
 
 
 def get_user_transaction(txn_id: int, user_id: int) -> Optional[Dict]:

@@ -12,21 +12,18 @@ from config import ADMINS
 from keyboards.main_menu import main_menu_keyboard_for_user
 from services.db import add_user, ensure_user_exists, update_last_name
 from services.payment_workflow import (
-    STATUS_DRAFT,
     create_transaction_draft,
     duplicate_reason_label,
     format_card_number_for_display,
     get_active_bank_cards,
+    get_photo_hash_submission_state,
     get_receipt_bank_cards,
     get_duplicate_candidates,
-    get_transaction,
     normalize_card_number,
     normalize_digits,
-    normalize_last4,
     set_claimed_amount,
     set_destination_card_from_card_id,
     set_destination_card_manual,
-    set_source_card_last4,
     set_transfer_date,
     set_transfer_time,
     submit_transaction_for_review,
@@ -47,8 +44,6 @@ class PaymentStates(StatesGroup):
     choosing_transfer_date = State()
     typing_transfer_date = State()
     typing_transfer_time = State()
-    typing_source_card_last4 = State()
-    confirming = State()
 
 
 def calculate_photo_hash(file_path: str) -> str:
@@ -70,21 +65,8 @@ def format_price(amount: int) -> str:
         return str(amount)
 
 
-def mask_card_number(card_number: Optional[str]) -> str:
-    return format_card_number_for_display(card_number)
-
-
 def ltr_card_text(card_number: Optional[str]) -> str:
     return format_card_number_for_display(card_number)
-
-
-def optional_keyboard(skip_text: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=skip_text, callback_data="pay|skip")],
-            [InlineKeyboardButton(text="❌ انصراف", callback_data="pay|cancel")],
-        ]
-    )
 
 
 def cancel_only_keyboard() -> InlineKeyboardMarkup:
@@ -144,15 +126,6 @@ def transfer_date_keyboard() -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(text=label, callback_data=f"pay|date|{key}")] for key, label in choices]
     rows.append([InlineKeyboardButton(text="❌ انصراف", callback_data="pay|cancel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def confirmation_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="✅ ثبت نهایی", callback_data="pay|confirm")],
-            [InlineKeyboardButton(text="❌ انصراف", callback_data="pay|cancel")],
-        ]
-    )
 
 
 def review_notification_keyboard(txn_id: int) -> InlineKeyboardMarkup:
@@ -232,23 +205,8 @@ def build_cards_text() -> str:
         lines.append(f"🏦 {card.get('bank_name') or '-'} به نام {card.get('owner_name') or '-'}")
         lines.append(f"<code>{ltr_card_text(card.get('card_number'))}</code>")
         lines.append("")
-    lines.append("📸 بعد از واریز، کافی است تصویر فیش را همین‌جا بفرستید تا ثبت پرداخت شروع شود.")
+    lines.append("📸 پس از واریز، لطفاً تصویر فیش را همین‌جا ارسال کنید تا فرایند ثبت پرداخت آغاز شود.")
     return "\n".join(lines)
-
-
-def build_payment_summary(txn: dict) -> str:
-    destination_card = ltr_card_text(txn.get("destination_card_number"))
-    destination_bank = txn.get("destination_bank_name") or "کارت خارج از لیست"
-    source_last4 = txn.get("source_card_last4") or "وارد نشده"
-    return (
-        "🧾 <b>خلاصه ثبت فیش</b>\n\n"
-        f"💰 مبلغ: <b>{format_price(txn.get('amount_claimed') or 0)} تومان</b>\n"
-        f"🏦 کارت مقصد: <code>{destination_card}</code>\n"
-        f"🏷 بانک/عنوان کارت: <b>{destination_bank}</b>\n"
-        f"📅 تاریخ واریز: <b>{txn.get('transfer_date') or '-'}</b>\n"
-        f"🕒 ساعت واریز: <b>{txn.get('transfer_time') or '-'}</b>\n"
-        f"💳 ۴ رقم آخر کارت مبدا: <b>{source_last4}</b>"
-    )
 
 
 def build_admin_submission_caption(txn: dict) -> str:
@@ -268,6 +226,23 @@ def build_admin_submission_caption(txn: dict) -> str:
         f"💳 ۴ رقم آخر کارت مبدا: {txn.get('source_card_last4') or 'ندارد'}\n"
         f"{duplicate_note}"
     )
+
+
+def cleanup_unused_receipt_file(photo_path: Path) -> None:
+    try:
+        photo_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+    try:
+        parent = photo_path.parent
+        if parent.exists() and not any(parent.iterdir()):
+            parent.rmdir()
+            grandparent = parent.parent
+            if grandparent.exists() and not any(grandparent.iterdir()):
+                grandparent.rmdir()
+    except Exception:
+        pass
 
 
 async def register_receipt_upload(message: Message, state: FSMContext, bot: Bot) -> bool:
@@ -296,6 +271,25 @@ async def register_receipt_upload(message: Message, state: FSMContext, bot: Bot)
     await bot.download_file(telegram_file.file_path, destination=photo_path)
     photo_hash = calculate_photo_hash(str(photo_path))
 
+    existing_photo_state = get_photo_hash_submission_state(photo_hash)
+    if existing_photo_state:
+        cleanup_unused_receipt_file(photo_path)
+        await state.clear()
+
+        if existing_photo_state["result"] == "approved":
+            await message.answer(
+                "✅ این فیش قبلاً تایید شده است. لطفاً از ارسال مجدد آن خودداری فرمایید.",
+                reply_markup=main_menu_keyboard_for_user(message.from_user.id),
+            )
+            return False
+
+        if existing_photo_state["result"] != "retryable":
+            await message.answer(
+                "⏳ این فیش قبلاً ثبت شده و همچنان در حال بررسی است. لطفاً منتظر بمانید تا نتیجه بررسی اعلام شود.",
+                reply_markup=main_menu_keyboard_for_user(message.from_user.id),
+            )
+            return False
+
     txn_id = create_transaction_draft(
         user_id=user_id,
         photo_id=file_id,
@@ -306,7 +300,7 @@ async def register_receipt_upload(message: Message, state: FSMContext, bot: Bot)
     await state.clear()
     await state.update_data(payment_txn_id=txn_id)
     await message.answer(
-        "✅ رسید پرداخت دریافت شد. حالا چند مورد کوتاه را ثبت می‌کنیم تا بررسی سریع‌تر و دقیق‌تر انجام شود.",
+        "✅ رسید پرداخت شما دریافت شد. لطفاً در ادامه چند مورد کوتاه را ثبت کنید تا بررسی سریع‌تر و دقیق‌تر انجام شود.",
         reply_markup=main_menu_keyboard_for_user(message.from_user.id),
     )
     await prompt_amount(message, state)
@@ -328,7 +322,7 @@ def ensure_user_record(message: Message) -> None:
 async def prompt_amount(message: Message, state: FSMContext) -> None:
     await state.set_state(PaymentStates.choosing_amount)
     await message.answer(
-        "💰 مبلغ واریزی را انتخاب کنید یا اگر بین گزینه‌ها نبود، «مبلغ دیگر» را بزنید:",
+        "💰 مبلغ واریزی را انتخاب کنید. اگر مبلغ موردنظر در گزینه‌ها نبود، «مبلغ دیگر» را انتخاب فرمایید:",
         reply_markup=amount_keyboard(),
     )
 
@@ -336,7 +330,7 @@ async def prompt_amount(message: Message, state: FSMContext) -> None:
 async def prompt_destination_card(message: Message, state: FSMContext) -> None:
     await state.set_state(PaymentStates.choosing_destination_card)
     await message.answer(
-        "🏦 کارت مقصدی که مبلغ را به آن واریز کرده‌اید انتخاب کنید:",
+        "🏦 لطفاً کارت مقصدی را که مبلغ به آن واریز شده است انتخاب کنید:",
         reply_markup=destination_card_keyboard(),
     )
 
@@ -344,7 +338,7 @@ async def prompt_destination_card(message: Message, state: FSMContext) -> None:
 async def prompt_transfer_date(message: Message, state: FSMContext) -> None:
     await state.set_state(PaymentStates.choosing_transfer_date)
     await message.answer(
-        "📅 تاریخ واریز را انتخاب کنید. اگر در گزینه‌ها نبود، ورود دستی را بزنید:",
+        "📅 لطفاً تاریخ واریز را انتخاب کنید. اگر در گزینه‌ها موجود نبود، «ورود دستی تاریخ» را انتخاب فرمایید:",
         reply_markup=transfer_date_keyboard(),
     )
 
@@ -352,42 +346,56 @@ async def prompt_transfer_date(message: Message, state: FSMContext) -> None:
 async def prompt_transfer_time(message: Message, state: FSMContext) -> None:
     await state.set_state(PaymentStates.typing_transfer_time)
     await message.answer(
-        "🕒 ساعت دقیق واریز را با فرمت <code>HH:MM</code> بفرست.\nمثال: <code>14:37</code>",
+        "🕒 لطفاً ساعت دقیق واریز را با فرمت <code>HH:MM</code> ارسال کنید.\nمثال: <code>14:37</code>",
         parse_mode="HTML",
         reply_markup=cancel_only_keyboard(),
     )
 
 
-async def prompt_source_last4(message: Message, state: FSMContext) -> None:
-    await state.set_state(PaymentStates.typing_source_card_last4)
-    await message.answer(
-        "💳 ۴ رقم آخر کارت مبدا را بفرست.\n"
-        "وارد کردنش باعث سریع‌تر تایید شدن میشه.\n"
-        "اگر نمی‌خواهی، دکمه «ندارم» را بزن.",
-        reply_markup=optional_keyboard("ندارم"),
-    )
-
-
-async def prompt_confirmation(message: Message, state: FSMContext) -> None:
+async def finalize_payment_submission(message: Message, state: FSMContext, bot: Bot) -> None:
     data = await state.get_data()
     txn_id = data.get("payment_txn_id")
     if not txn_id:
         await state.clear()
-        await message.answer("❌ وضعیت ثبت فیش پیدا نشد. دوباره از اول اقدام کن.", reply_markup=main_menu_keyboard_for_user(message.from_user.id))
+        await message.answer(
+            "❌ ثبت فیش یافت نشد. لطفاً دوباره از ابتدا اقدام کنید.",
+            reply_markup=main_menu_keyboard_for_user(message.from_user.id),
+        )
         return
 
-    txn = get_transaction(int(txn_id))
-    if not txn or txn.get("status") != STATUS_DRAFT:
+    txn = submit_transaction_for_review(int(txn_id), message.from_user.id)
+    if not txn:
         await state.clear()
-        await message.answer("❌ این ثبت فیش دیگر قابل ادامه نیست. دوباره شروع کن.", reply_markup=main_menu_keyboard_for_user(message.from_user.id))
+        await message.answer(
+            "❌ ثبت فیش انجام نشد. لطفاً دوباره تلاش کنید یا مجدداً از ابتدا شروع فرمایید.",
+            reply_markup=main_menu_keyboard_for_user(message.from_user.id),
+        )
         return
 
-    await state.set_state(PaymentStates.confirming)
+    duplicate_candidates = get_duplicate_candidates(int(txn_id), limit=5)
+    duplicate_note = ""
+    if duplicate_candidates:
+        duplicate_note = "\n⚠️ این فیش برای بررسی دقیق‌تر علامت‌گذاری شد."
+
     await message.answer(
-        build_payment_summary(txn),
-        parse_mode="HTML",
-        reply_markup=confirmation_keyboard(),
+        "✅ فیش شما با موفقیت ثبت شد. لطفاً منتظر بررسی و تایید بمانید."
+        f"{duplicate_note}",
+        reply_markup=main_menu_keyboard_for_user(message.from_user.id),
     )
+
+    for admin_id in ADMINS:
+        try:
+            await bot.send_photo(
+                admin_id,
+                txn["photo_id"],
+                caption=build_admin_submission_caption(txn),
+                parse_mode="HTML",
+                reply_markup=review_notification_keyboard(int(txn_id)),
+            )
+        except Exception as exc:
+            print(f"خطا در ارسال اعلان تراکنش #{txn_id} به ادمین {admin_id}: {exc}")
+
+    await state.clear()
 
 
 @router.message(F.text.in_({"💳 شارژ حساب", "💳 شماره کارت", "💳 دریافت شماره کارت", "شماره کارت"}))
@@ -417,20 +425,20 @@ async def choose_amount(callback: CallbackQuery, state: FSMContext):
     txn_id = data.get("payment_txn_id")
     if not txn_id:
         await state.clear()
-        await callback.message.answer("❌ ثبت فیش پیدا نشد. دوباره از اول اقدام کن.")
+        await callback.message.answer("❌ ثبت فیش یافت نشد. لطفاً دوباره از ابتدا اقدام کنید.")
         return await callback.answer()
 
     if value == "other":
         await state.set_state(PaymentStates.typing_amount)
         await callback.message.answer(
-            f"💰 مبلغ را به تومان بفرست.\nبازه مجاز: {format_price(MIN_TOPUP)} تا {format_price(MAX_TOPUP)} تومان",
+            f"💰 لطفاً مبلغ را به تومان ارسال کنید.\nبازه مجاز: {format_price(MIN_TOPUP)} تا {format_price(MAX_TOPUP)} تومان",
             reply_markup=cancel_only_keyboard(),
         )
         return await callback.answer()
 
     amount = parse_amount(value)
     if amount is None or not set_claimed_amount(int(txn_id), callback.from_user.id, amount):
-        await callback.message.answer("❌ ثبت مبلغ انجام نشد. دوباره تلاش کن.")
+        await callback.message.answer("❌ ثبت مبلغ انجام نشد. لطفاً دوباره تلاش کنید.")
         return await callback.answer()
 
     await callback.answer("مبلغ ثبت شد.")
@@ -444,13 +452,13 @@ async def type_amount(message: Message, state: FSMContext):
     amount = parse_amount(message.text or "")
     if not txn_id or amount is None:
         await message.answer(
-            f"❌ لطفاً مبلغی بین {format_price(MIN_TOPUP)} تا {format_price(MAX_TOPUP)} تومان وارد کن."
+            f"❌ لطفاً مبلغی بین {format_price(MIN_TOPUP)} تا {format_price(MAX_TOPUP)} تومان وارد کنید."
         )
         return
 
     if not set_claimed_amount(int(txn_id), message.from_user.id, amount):
         await state.clear()
-        await message.answer("❌ ثبت مبلغ انجام نشد. دوباره از اول اقدام کن.", reply_markup=main_menu_keyboard_for_user(message.from_user.id))
+        await message.answer("❌ ثبت مبلغ انجام نشد. لطفاً دوباره از ابتدا اقدام کنید.", reply_markup=main_menu_keyboard_for_user(message.from_user.id))
         return
 
     await prompt_destination_card(message, state)
@@ -463,20 +471,20 @@ async def choose_destination_card(callback: CallbackQuery, state: FSMContext):
     txn_id = data.get("payment_txn_id")
     if not txn_id:
         await state.clear()
-        await callback.message.answer("❌ ثبت فیش پیدا نشد. دوباره از اول اقدام کن.")
+        await callback.message.answer("❌ ثبت فیش یافت نشد. لطفاً دوباره از ابتدا اقدام کنید.")
         return await callback.answer()
 
     if value == "manual":
         await state.set_state(PaymentStates.typing_destination_card)
         await callback.message.answer(
-            "✏️ شماره کامل کارت مقصد را بفرست.\nمثال: <code>6037123412341234</code>",
+            "✏️ لطفاً شماره کامل کارت مقصد را ارسال کنید.\nمثال: <code>6037123412341234</code>",
             parse_mode="HTML",
             reply_markup=cancel_only_keyboard(),
         )
         return await callback.answer()
 
     if not set_destination_card_from_card_id(int(txn_id), callback.from_user.id, int(value)):
-        await callback.message.answer("❌ ثبت کارت مقصد انجام نشد. دوباره تلاش کن.")
+        await callback.message.answer("❌ ثبت کارت مقصد انجام نشد. لطفاً دوباره تلاش کنید.")
         return await callback.answer()
 
     await callback.answer("کارت مقصد ثبت شد.")
@@ -489,12 +497,12 @@ async def type_destination_card(message: Message, state: FSMContext):
     txn_id = data.get("payment_txn_id")
     normalized = normalize_card_number(message.text or "")
     if not txn_id or len(normalized) != 16:
-        await message.answer("❌ لطفاً شماره کارت ۱۶ رقمی معتبر وارد کن.")
+        await message.answer("❌ لطفاً شماره کارت ۱۶ رقمی معتبر وارد کنید.")
         return
 
     if not set_destination_card_manual(int(txn_id), message.from_user.id, normalized):
         await state.clear()
-        await message.answer("❌ ثبت کارت مقصد انجام نشد. دوباره از اول اقدام کن.", reply_markup=main_menu_keyboard_for_user(message.from_user.id))
+        await message.answer("❌ ثبت کارت مقصد انجام نشد. لطفاً دوباره از ابتدا اقدام کنید.", reply_markup=main_menu_keyboard_for_user(message.from_user.id))
         return
 
     await prompt_transfer_date(message, state)
@@ -507,13 +515,13 @@ async def choose_transfer_date(callback: CallbackQuery, state: FSMContext):
     txn_id = data.get("payment_txn_id")
     if not txn_id:
         await state.clear()
-        await callback.message.answer("❌ ثبت فیش پیدا نشد. دوباره از اول اقدام کن.")
+        await callback.message.answer("❌ ثبت فیش یافت نشد. لطفاً دوباره از ابتدا اقدام کنید.")
         return await callback.answer()
 
     if value == "manual":
         await state.set_state(PaymentStates.typing_transfer_date)
         await callback.message.answer(
-            "📅 تاریخ واریز را با فرمت <code>1405/01/16</code> بفرست.",
+            "📅 لطفاً تاریخ واریز را با فرمت <code>1405/01/16</code> ارسال کنید.",
             parse_mode="HTML",
             reply_markup=cancel_only_keyboard(),
         )
@@ -521,7 +529,7 @@ async def choose_transfer_date(callback: CallbackQuery, state: FSMContext):
 
     selected_date = _selected_relative_date(value)
     if not selected_date or not set_transfer_date(int(txn_id), callback.from_user.id, selected_date):
-        await callback.message.answer("❌ ثبت تاریخ انجام نشد. دوباره تلاش کن.")
+        await callback.message.answer("❌ ثبت تاریخ انجام نشد. لطفاً دوباره تلاش کنید.")
         return await callback.answer()
 
     await callback.answer("تاریخ ثبت شد.")
@@ -534,132 +542,39 @@ async def type_transfer_date(message: Message, state: FSMContext):
     txn_id = data.get("payment_txn_id")
     transfer_date = parse_manual_date(message.text or "")
     if not txn_id or not transfer_date:
-        await message.answer("❌ تاریخ را با فرمت درست مثل <code>1405/01/16</code> بفرست.", parse_mode="HTML")
+        await message.answer("❌ لطفاً تاریخ را با فرمت صحیح، مانند <code>1405/01/16</code> ارسال کنید.", parse_mode="HTML")
         return
 
     if not set_transfer_date(int(txn_id), message.from_user.id, transfer_date):
         await state.clear()
-        await message.answer("❌ ثبت تاریخ انجام نشد. دوباره از اول اقدام کن.", reply_markup=main_menu_keyboard_for_user(message.from_user.id))
+        await message.answer("❌ ثبت تاریخ انجام نشد. لطفاً دوباره از ابتدا اقدام کنید.", reply_markup=main_menu_keyboard_for_user(message.from_user.id))
         return
 
     await prompt_transfer_time(message, state)
 
 
 @router.message(PaymentStates.typing_transfer_time)
-async def type_transfer_time(message: Message, state: FSMContext):
+async def type_transfer_time(message: Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
     txn_id = data.get("payment_txn_id")
     time_value = parse_time_value(message.text or "")
     if not txn_id or not time_value:
-        await message.answer("❌ ساعت را با فرمت <code>HH:MM</code> بفرست. مثال: <code>14:37</code>", parse_mode="HTML")
+        await message.answer("❌ لطفاً ساعت را با فرمت <code>HH:MM</code> ارسال کنید. مثال: <code>14:37</code>", parse_mode="HTML")
         return
 
     if not set_transfer_time(int(txn_id), message.from_user.id, time_value):
         await state.clear()
-        await message.answer("❌ ثبت ساعت انجام نشد. دوباره از اول اقدام کن.", reply_markup=main_menu_keyboard_for_user(message.from_user.id))
+        await message.answer("❌ ثبت ساعت انجام نشد. لطفاً دوباره از ابتدا اقدام کنید.", reply_markup=main_menu_keyboard_for_user(message.from_user.id))
         return
 
-    await prompt_source_last4(message, state)
-
-
-@router.message(PaymentStates.typing_source_card_last4)
-async def type_source_last4(message: Message, state: FSMContext):
-    data = await state.get_data()
-    txn_id = data.get("payment_txn_id")
-    last4 = normalize_last4(message.text or "")
-    if not txn_id or len(last4) != 4:
-        await message.answer("❌ فقط ۴ رقم آخر کارت مبدا را بفرست یا از دکمه «ندارم» استفاده کن.")
-        return
-
-    if not set_source_card_last4(int(txn_id), message.from_user.id, last4):
-        await state.clear()
-        await message.answer("❌ ثبت ۴ رقم آخر کارت انجام نشد. دوباره از اول اقدام کن.", reply_markup=main_menu_keyboard_for_user(message.from_user.id))
-        return
-
-    await prompt_confirmation(message, state)
-
-
-@router.callback_query(F.data == "pay|skip")
-async def skip_optional_step(callback: CallbackQuery, state: FSMContext):
-    current_state = await state.get_state()
-    data = await state.get_data()
-    txn_id = data.get("payment_txn_id")
-    if not txn_id:
-        await state.clear()
-        await callback.message.answer("❌ ثبت فیش پیدا نشد. دوباره از اول اقدام کن.")
-        return await callback.answer()
-
-    if current_state == PaymentStates.typing_transfer_time.state:
-        await callback.message.answer("❌ ساعت واریز اجباری است و باید وارد شود.")
-        return await callback.answer()
-
-    if current_state == PaymentStates.typing_amount.state:
-        await callback.message.answer("❌ مبلغ واریز اجباری است و باید وارد شود.")
-        return await callback.answer()
-
-    if current_state == PaymentStates.typing_destination_card.state:
-        await callback.message.answer("❌ کارت مقصد اجباری است و باید وارد شود.")
-        return await callback.answer()
-
-    if current_state == PaymentStates.typing_transfer_date.state:
-        await callback.message.answer("❌ تاریخ واریز اجباری است و باید وارد شود.")
-        return await callback.answer()
-
-    if current_state == PaymentStates.typing_source_card_last4.state:
-        set_source_card_last4(int(txn_id), callback.from_user.id, None)
-        await callback.answer("۴ رقم آخر ثبت نشد.")
-        await prompt_confirmation(callback.message, state)
-        return
-
-    await callback.answer()
-
-
-@router.callback_query(F.data == "pay|confirm")
-async def confirm_payment_submission(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    txn_id = data.get("payment_txn_id")
-    if not txn_id:
-        await state.clear()
-        await callback.message.answer("❌ ثبت فیش پیدا نشد. دوباره از اول اقدام کن.")
-        return await callback.answer()
-
-    txn = submit_transaction_for_review(int(txn_id), callback.from_user.id)
-    if not txn:
-        await callback.message.answer("❌ ثبت نهایی فیش انجام نشد. دوباره تلاش کن یا از اول شروع کن.")
-        return await callback.answer()
-
-    duplicate_candidates = get_duplicate_candidates(int(txn_id), limit=5)
-    duplicate_note = ""
-    if duplicate_candidates:
-        duplicate_note = "\n⚠️ این فیش برای بررسی دقیق‌تر علامت‌گذاری شد."
-
-    await callback.message.answer(
-        "✅ فیش شما ثبت شد و برای بررسی ارسال شد."
-        f"{duplicate_note}",
-        reply_markup=main_menu_keyboard_for_user(callback.from_user.id),
-    )
-
-    for admin_id in ADMINS:
-        try:
-            await callback.bot.send_photo(
-                admin_id,
-                txn["photo_id"],
-                caption=build_admin_submission_caption(txn),
-                parse_mode="HTML",
-                reply_markup=review_notification_keyboard(int(txn_id)),
-            )
-        except Exception as exc:
-            print(f"خطا در ارسال اعلان تراکنش #{txn_id} به ادمین {admin_id}: {exc}")
-
-    await state.clear()
-    await callback.answer("ثبت شد.")
+    await finalize_payment_submission(message, state, bot)
 
 
 @router.callback_query(F.data == "pay|cancel")
 async def cancel_payment_flow(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.answer(
-        "ثبت فیش لغو شد.",
+        "فرایند ثبت فیش لغو شد.",
         reply_markup=main_menu_keyboard_for_user(callback.from_user.id),
     )
     await callback.answer("لغو شد.")
